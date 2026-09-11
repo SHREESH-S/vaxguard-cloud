@@ -1,16 +1,13 @@
 {
-  "name": "vaxguard-cloud",
+  "name": "coldchain-guardian-server",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Cloud command center for ColdChain Guardian cold-chain monitoring devices",
+  "main": "server.js",
+  "engines": { "node": ">=18" },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node server.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
-    "express": "^5.2.1"
+    "express": "^4.19.2"
   }
 }
