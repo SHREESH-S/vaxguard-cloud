@@ -813,3 +813,342 @@ setInterval(
 </html>
   `);
 });
+// ============================================================
+// PART 3 - ADVANCED MONITORING APIs
+// ============================================================
+
+// SYSTEM SUMMARY
+app.get("/api/system", (req, res) => {
+
+  const now = Date.now();
+
+  let online = false;
+
+  if (latestData.updatedAt) {
+    const lastUpdate =
+      new Date(latestData.updatedAt).getTime();
+
+    online = (now - lastUpdate) < 15000;
+  }
+
+  res.json({
+
+    device: latestData.device,
+
+    online: online,
+
+    status: latestData.status,
+
+    temperature: latestData.temperature,
+
+    humidity: latestData.humidity,
+
+    vibration: latestData.vibration,
+
+    risk: latestData.risk,
+
+    predictedRisk: latestData.predictedRisk,
+
+    anomaly: latestData.anomaly,
+
+    confidence: latestData.confidence,
+
+    trend: latestData.trend,
+
+    fault: latestData.fault,
+
+    wifiRSSI: latestData.wifiRSSI,
+
+    reconnects: latestData.reconnects,
+
+    updatedAt: latestData.updatedAt
+
+  });
+
+});
+
+
+// ============================================================
+// DASHBOARD STATISTICS
+// ============================================================
+
+app.get("/api/stats", (req, res) => {
+
+  let minTemp = null;
+  let maxTemp = null;
+  let avgTemp = null;
+
+  if (temperatureHistory.length > 0) {
+
+    const values =
+      temperatureHistory
+        .map(x => Number(x.temperature))
+        .filter(x => !isNaN(x));
+
+    if (values.length > 0) {
+
+      minTemp = Math.min(...values);
+
+      maxTemp = Math.max(...values);
+
+      avgTemp =
+        values.reduce(
+          (sum, value) => sum + value,
+          0
+        ) / values.length;
+
+    }
+
+  }
+
+  res.json({
+
+    samples: temperatureHistory.length,
+
+    minimumTemperature: minTemp,
+
+    maximumTemperature: maxTemp,
+
+    averageTemperature: avgTemp,
+
+    totalAlerts: alertHistory.length,
+
+    totalAuditEvents: auditHistory.length
+
+  });
+
+});
+
+
+// ============================================================
+// CSV EXPORT
+// ============================================================
+
+app.get("/api/export", (req, res) => {
+
+  let csv =
+    "Timestamp,Temperature,Humidity\n";
+
+  temperatureHistory.forEach(item => {
+
+    csv +=
+      `"${item.timestamp}",` +
+      `"${item.temperature}",` +
+      `"${item.humidity}"\n`;
+
+  });
+
+  res.setHeader(
+    "Content-Type",
+    "text/csv"
+  );
+
+  res.setHeader(
+    "Content-Disposition",
+    "attachment; filename=vaxguard-temperature.csv"
+  );
+
+  res.send(csv);
+
+});
+
+
+// ============================================================
+// CLEAR HISTORY
+// ============================================================
+
+app.post("/api/clear-history", (req, res) => {
+
+  temperatureHistory = [];
+
+  alertHistory = [];
+
+  auditHistory = [];
+
+  addAudit(
+    "Dashboard history cleared",
+    "SYSTEM"
+  );
+
+  res.json({
+    success: true,
+    message: "History cleared"
+  });
+
+});
+
+
+// ============================================================
+// DEVICE STATUS
+// ============================================================
+
+app.get("/api/device-status", (req, res) => {
+
+  let online = false;
+
+  if (latestData.updatedAt) {
+
+    const last =
+      new Date(latestData.updatedAt).getTime();
+
+    online =
+      (Date.now() - last) < 15000;
+
+  }
+
+  res.json({
+
+    device: latestData.device,
+
+    online: online,
+
+    status: latestData.status,
+
+    lastSeen: latestData.updatedAt,
+
+    cloud: "ONLINE"
+
+  });
+
+});
+
+
+// ============================================================
+// ALERT SUMMARY
+// ============================================================
+
+app.get("/api/alert-summary", (req, res) => {
+
+  let safe = 0;
+  let warning = 0;
+  let breach = 0;
+
+  alertHistory.forEach(alert => {
+
+    if (alert.status === "SAFE")
+      safe++;
+
+    if (alert.status === "WARNING")
+      warning++;
+
+    if (alert.status === "BREACH")
+      breach++;
+
+  });
+
+  res.json({
+
+    total: alertHistory.length,
+
+    safe: safe,
+
+    warning: warning,
+
+    breach: breach
+
+  });
+
+});
+
+
+// ============================================================
+// PREDICTIVE MONITORING
+// ============================================================
+
+app.get("/api/prediction", (req, res) => {
+
+  const current =
+    Number(latestData.temperature);
+
+  const predicted =
+    Number(latestData.predictedRisk || 0);
+
+  let message =
+    "Conditions stable";
+
+  let level =
+    "LOW";
+
+  if (predicted >= 70) {
+
+    message =
+      "High probability of cold-chain risk";
+
+    level =
+      "HIGH";
+
+  }
+
+  else if (predicted >= 40) {
+
+    message =
+      "Environmental conditions require attention";
+
+    level =
+      "MEDIUM";
+
+  }
+
+  res.json({
+
+    temperature: current,
+
+    predictedRisk: predicted,
+
+    predictionLevel: level,
+
+    message: message,
+
+    trend:
+      latestData.trend || "STABLE"
+
+  });
+
+});
+
+
+// ============================================================
+// SECURITY / API STATUS
+// ============================================================
+
+app.get("/api/cloud-status", (req, res) => {
+
+  res.json({
+
+    service: "VAXGUARD PRO",
+
+    cloud: "ONLINE",
+
+    api: "ONLINE",
+
+    security:
+      API_KEY ? "ACTIVE" : "NOT CONFIGURED",
+
+    serverTime:
+      new Date().toISOString()
+
+  });
+
+});
+
+
+// ============================================================
+// ERROR HANDLER
+// ============================================================
+
+app.use((err, req, res, next) => {
+
+  console.error(
+    "SERVER ERROR:",
+    err
+  );
+
+  res.status(500).json({
+
+    success: false,
+
+    error: "Internal server error"
+
+  });
+
+});
