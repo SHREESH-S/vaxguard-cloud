@@ -1152,3 +1152,785 @@ app.use((err, req, res, next) => {
   });
 
 });
+// ============================================================
+// PART 4 - ADVANCED DASHBOARD CONTROLS
+// ============================================================
+
+// Dashboard settings
+app.get("/api/settings", (req, res) => {
+
+  res.json({
+    temperatureSafeMin: 2,
+    temperatureSafeMax: 8,
+    warningLow: 2.8,
+    warningHigh: 7.2,
+    vibrationWarning: 6,
+    vibrationBreach: 12,
+    refreshInterval: 3000
+  });
+
+});
+
+
+// ============================================================
+// VOICE ASSISTANT MESSAGE
+// ============================================================
+
+app.get("/api/voice", (req, res) => {
+
+  let message = "";
+
+  if (latestData.status === "SAFE") {
+
+    message =
+      `VAXGUARD reports safe conditions. ` +
+      `Current temperature is ${latestData.temperature ?? "unknown"} degrees Celsius.`;
+
+  }
+
+  else if (latestData.status === "WARNING") {
+
+    message =
+      `Warning. VAXGUARD has detected conditions ` +
+      `that require attention. ` +
+      `Current temperature is ${latestData.temperature ?? "unknown"} degrees Celsius.`;
+
+  }
+
+  else if (latestData.status === "BREACH") {
+
+    message =
+      `Critical alert. VAXGUARD has detected a cold chain breach. ` +
+      `Immediate inspection is recommended.`;
+
+  }
+
+  else {
+
+    message =
+      "VAXGUARD is waiting for device information.";
+
+  }
+
+  res.json({
+    message: message
+  });
+
+});
+
+
+// ============================================================
+// DASHBOARD PAGE 2 - ADVANCED MONITORING
+// ============================================================
+
+app.get("/monitor", (req, res) => {
+
+  res.send(`
+
+<!DOCTYPE html>
+
+<html>
+
+<head>
+
+<meta charset="UTF-8">
+
+<meta name="viewport"
+      content="width=device-width,initial-scale=1">
+
+<title>VAXGUARD PRO Monitoring</title>
+
+<style>
+
+*{
+  box-sizing:border-box;
+  font-family:Arial,sans-serif;
+}
+
+body{
+  margin:0;
+  background:#0b1220;
+  color:#e5e7eb;
+}
+
+header{
+  background:#111827;
+  padding:20px;
+  border-bottom:1px solid #263244;
+}
+
+header h1{
+  margin:0;
+}
+
+header p{
+  color:#94a3b8;
+}
+
+.container{
+  padding:20px;
+  max-width:1400px;
+  margin:auto;
+}
+
+.grid{
+  display:grid;
+  grid-template-columns:
+    repeat(auto-fit,minmax(220px,1fr));
+
+  gap:16px;
+}
+
+.card{
+  background:#111827;
+  border:1px solid #263244;
+  border-radius:14px;
+  padding:20px;
+}
+
+.label{
+  color:#94a3b8;
+  font-size:13px;
+}
+
+.value{
+  font-size:30px;
+  font-weight:bold;
+  margin-top:8px;
+}
+
+.safe{
+  color:#22c55e;
+}
+
+.warning{
+  color:#f59e0b;
+}
+
+.breach{
+  color:#ef4444;
+}
+
+.panel{
+  margin-top:20px;
+  background:#111827;
+  border:1px solid #263244;
+  border-radius:14px;
+  padding:20px;
+}
+
+button{
+  border:none;
+  border-radius:8px;
+  padding:12px 18px;
+  margin:5px;
+  cursor:pointer;
+  background:#1f2937;
+  color:white;
+}
+
+button:hover{
+  background:#374151;
+}
+
+.alert{
+  padding:12px;
+  margin-top:8px;
+  border-radius:8px;
+  background:#172033;
+}
+
+.small{
+  color:#94a3b8;
+  font-size:13px;
+}
+
+</style>
+
+</head>
+
+
+<body>
+
+
+<header>
+
+<h1>🛡️ VAXGUARD PRO</h1>
+
+<p>Advanced Cold Chain Intelligence</p>
+
+</header>
+
+
+<div class="container">
+
+
+<!-- LIVE DATA -->
+
+<div class="grid">
+
+
+<div class="card">
+
+<div class="label">
+TEMPERATURE
+</div>
+
+<div class="value">
+
+<span id="temperature">
+--
+</span>
+
+°C
+
+</div>
+
+</div>
+
+
+<div class="card">
+
+<div class="label">
+HUMIDITY
+</div>
+
+<div class="value">
+
+<span id="humidity">
+--
+</span>
+
+%
+
+</div>
+
+</div>
+
+
+<div class="card">
+
+<div class="label">
+RISK SCORE
+</div>
+
+<div class="value">
+
+<span id="risk">
+--
+</span>
+
+%
+
+</div>
+
+</div>
+
+
+<div class="card">
+
+<div class="label">
+PREDICTED RISK
+</div>
+
+<div class="value">
+
+<span id="prediction">
+--
+</span>
+
+%
+
+</div>
+
+</div>
+
+
+<div class="card">
+
+<div class="label">
+ANOMALY SCORE
+</div>
+
+<div class="value">
+
+<span id="anomaly">
+--
+</span>
+
+%
+
+</div>
+
+</div>
+
+
+<div class="card">
+
+<div class="label">
+SENSOR CONFIDENCE
+</div>
+
+<div class="value">
+
+<span id="confidence">
+--
+</span>
+
+%
+
+</div>
+
+</div>
+
+
+</div>
+
+
+<!-- SYSTEM -->
+
+<div class="panel">
+
+<h2>📡 Device Health</h2>
+
+<p>
+Device:
+<strong id="device">--</strong>
+</p>
+
+<p>
+Connection:
+<strong id="connection">
+Checking...
+</strong>
+</p>
+
+<p>
+Wi-Fi RSSI:
+<strong id="wifi">--</strong>
+</p>
+
+<p>
+Wi-Fi reconnects:
+<strong id="reconnects">--</strong>
+</p>
+
+<p>
+Temperature trend:
+<strong id="trend">--</strong>
+</p>
+
+</div>
+
+
+<!-- ADVISORY -->
+
+<div class="panel">
+
+<h2>🧠 Intelligent Advisory</h2>
+
+<p id="advisory">
+Waiting for data...
+</p>
+
+</div>
+
+
+<!-- VOICE -->
+
+<div class="panel">
+
+<h2>🔊 Voice Assistant</h2>
+
+<p class="small">
+Press the button to hear the current VAXGUARD status.
+</p>
+
+<button onclick="speakStatus()">
+🔊 Speak Current Status
+</button>
+
+</div>
+
+
+<!-- ALERTS -->
+
+<div class="panel">
+
+<h2>🚨 Recent Alerts</h2>
+
+<div id="alerts">
+
+No alerts yet.
+
+</div>
+
+</div>
+
+
+<!-- EXPORT -->
+
+<div class="panel">
+
+<h2>📥 Data Management</h2>
+
+<button onclick="downloadCSV()">
+Download Temperature CSV
+</button>
+
+<button onclick="loadStats()">
+View Statistics
+</button>
+
+<div id="stats"></div>
+
+</div>
+
+
+</div>
+
+
+<script>
+
+
+// ============================================================
+// UPDATE LIVE DATA
+// ============================================================
+
+async function updateData(){
+
+  try{
+
+    const response =
+      await fetch("/api/latest");
+
+    const data =
+      await response.json();
+
+
+    document.getElementById("temperature")
+      .innerText =
+      data.temperature != null
+      ? Number(data.temperature).toFixed(1)
+      : "--";
+
+
+    document.getElementById("humidity")
+      .innerText =
+      data.humidity != null
+      ? Number(data.humidity).toFixed(1)
+      : "--";
+
+
+    document.getElementById("risk")
+      .innerText =
+      data.risk ?? 0;
+
+
+    document.getElementById("prediction")
+      .innerText =
+      data.predictedRisk ?? 0;
+
+
+    document.getElementById("anomaly")
+      .innerText =
+      data.anomaly ?? 0;
+
+
+    document.getElementById("confidence")
+      .innerText =
+      data.confidence ?? 0;
+
+
+    document.getElementById("device")
+      .innerText =
+      data.device || "--";
+
+
+    document.getElementById("wifi")
+      .innerText =
+      data.wifiRSSI ?? "--";
+
+
+    document.getElementById("reconnects")
+      .innerText =
+      data.reconnects ?? 0;
+
+
+    document.getElementById("trend")
+      .innerText =
+      data.trend || "STABLE";
+
+
+    document.getElementById("advisory")
+      .innerText =
+      data.advisory ||
+      "System operating normally";
+
+
+    const connection =
+      document.getElementById("connection");
+
+
+    connection.innerText =
+      "● CLOUD ONLINE";
+
+    connection.className =
+      "safe";
+
+
+  }
+
+  catch(error){
+
+    console.log(error);
+
+    document.getElementById("connection")
+      .innerText =
+      "● CONNECTION ERROR";
+
+  }
+
+}
+
+
+// ============================================================
+// LOAD ALERTS
+// ============================================================
+
+async function loadAlerts(){
+
+  try{
+
+    const response =
+      await fetch("/api/alerts");
+
+    const result =
+      await response.json();
+
+
+    const container =
+      document.getElementById("alerts");
+
+
+    if(!result.data ||
+       result.data.length === 0){
+
+      container.innerHTML =
+        "No alerts recorded.";
+
+      return;
+
+    }
+
+
+    container.innerHTML = "";
+
+
+    result.data
+      .slice()
+      .reverse()
+      .slice(0,10)
+      .forEach(alert => {
+
+        const div =
+          document.createElement("div");
+
+        div.className =
+          "alert";
+
+
+        div.innerHTML =
+
+          "<strong>" +
+          (alert.status || "EVENT") +
+          "</strong><br>" +
+
+          "<span class='small'>" +
+          (alert.message || "") +
+          "</span><br>" +
+
+          "<span class='small'>" +
+          new Date(alert.timestamp)
+            .toLocaleString() +
+          "</span>";
+
+
+        container.appendChild(div);
+
+      });
+
+  }
+
+  catch(error){
+
+    console.log(error);
+
+  }
+
+}
+
+
+// ============================================================
+// VOICE ASSISTANT
+// ============================================================
+
+async function speakStatus(){
+
+  try{
+
+    const response =
+      await fetch("/api/voice");
+
+    const data =
+      await response.json();
+
+
+    if(
+      "speechSynthesis" in window
+    ){
+
+      const speech =
+        new SpeechSynthesisUtterance(
+          data.message
+        );
+
+      speech.rate = 0.95;
+
+      speech.pitch = 1;
+
+      window.speechSynthesis
+        .cancel();
+
+      window.speechSynthesis
+        .speak(speech);
+
+    }
+
+  }
+
+  catch(error){
+
+    console.log(error);
+
+  }
+
+}
+
+
+// ============================================================
+// DOWNLOAD CSV
+// ============================================================
+
+function downloadCSV(){
+
+  window.location.href =
+    "/api/export";
+
+}
+
+
+// ============================================================
+// STATISTICS
+// ============================================================
+
+async function loadStats(){
+
+  try{
+
+    const response =
+      await fetch("/api/stats");
+
+    const data =
+      await response.json();
+
+
+    document.getElementById("stats")
+      .innerHTML = `
+
+        <br>
+
+        Samples:
+        <strong>
+        ${data.samples}
+        </strong>
+
+        <br>
+
+        Minimum:
+        <strong>
+        ${data.minimumTemperature ?? "--"}
+        °C
+        </strong>
+
+        <br>
+
+        Maximum:
+        <strong>
+        ${data.maximumTemperature ?? "--"}
+        °C
+        </strong>
+
+        <br>
+
+        Average:
+        <strong>
+        ${
+          data.averageTemperature != null
+          ? Number(
+              data.averageTemperature
+            ).toFixed(2)
+          : "--"
+        }
+        °C
+        </strong>
+
+        <br>
+
+        Total Alerts:
+        <strong>
+        ${data.totalAlerts}
+        </strong>
+
+      `;
+
+  }
+
+  catch(error){
+
+    console.log(error);
+
+  }
+
+}
+
+
+// ============================================================
+// START
+// ============================================================
+
+updateData();
+
+loadAlerts();
+
+setInterval(
+  updateData,
+  3000
+);
+
+setInterval(
+  loadAlerts,
+  5000
+);
+
+
+</script>
+
+
+</body>
+
+</html>
+
+  `);
+
+});
