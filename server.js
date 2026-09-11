@@ -1934,3 +1934,17 @@ setInterval(
   `);
 
 });
+// ============================================================
+// PART 5 - SERVER STARTUP
+// ============================================================
+
+// Render requires the server to listen on the assigned PORT
+// and on 0.0.0.0 so it can be accessed from the internet.
+
+app.listen(PORT, "0.0.0.0", () => {
+
+  console.log(
+    `VAXGUARD PRO Cloud Server running on port ${PORT}`
+  );
+
+});
