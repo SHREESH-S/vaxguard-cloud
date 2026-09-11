@@ -4,7 +4,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Change this before deploying online
-const API_KEY = "CHANGE_THIS_TO_A_LONG_SECRET_KEY";
+const API_KEY = "process.env.API_KEY";
 
 app.use(express.json());
 
