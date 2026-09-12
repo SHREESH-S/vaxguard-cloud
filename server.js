@@ -1,715 +1,817 @@
-// ============================================================================
-// COLDCHAIN GUARDIAN — CLOUD COMMAND CENTER
-// One Express server: ingest API for any number of physical devices,
-// a multi-device dashboard, digital twin view, voice control, incident
-// tracking, what-if simulator, audit export, and QR device identity.
-//
-// Deploy target: Render.com (or any Node host). Single file, as requested.
-// Storage: in-memory (fine for a hackathon/demo). Swap the STORE object
-// for a real database (Mongo/Postgres) for a production deployment —
-// the shape of the data is already structured to make that a drop-in swap.
-// ============================================================================
-
-const express = require("express");
-const path = require("path");
+const express = require('express');
+const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const bodyParser = require('body-parser');
+const path = require('path');
 
 const app = express();
-app.use(express.json({ limit: "64kb" })); // request size limit
-app.disable("x-powered-by");
-
 const PORT = process.env.PORT || 3000;
-const API_KEY = process.env.API_KEY || "change_me_shared_secret";
+const API_KEY = process.env.API_KEY || 'VAXGUARD_2026_MY_SECRET_1007';
 
-// ---------------------------------------------------------------------------
-// Very small in-memory rate limiter (no extra dependency required).
-// ---------------------------------------------------------------------------
-const rateBuckets = new Map();
-function rateLimit(req, res, next) {
-  const key = req.ip + ":" + req.path;
-  const now = Date.now();
-  const windowMs = 10000;
-  const max = 40;
-  const bucket = rateBuckets.get(key) || { count: 0, resetAt: now + windowMs };
-  if (now > bucket.resetAt) { bucket.count = 0; bucket.resetAt = now + windowMs; }
-  bucket.count++;
-  rateBuckets.set(key, bucket);
-  if (bucket.count > max) return res.status(429).json({ error: "Rate limit exceeded" });
-  next();
-}
-app.use(rateLimit);
+// ===================== IN-MEMORY STORE (Multi-device ready) =====================
+const devices = {};          // deviceId -> latest data
+const history = {};          // deviceId -> array of readings
+const alerts = [];           // global alerts
+const auditLog = [];         // audit events
+const incidents = [];        // open/closed incidents
 
-app.use((req, res, next) => {
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("X-Frame-Options", "DENY");
-  res.setHeader("Referrer-Policy", "no-referrer");
-  next();
+const MAX_HISTORY = 500;
+
+// ===================== MIDDLEWARE =====================
+app.use(helmet({ contentSecurityPolicy: false }));
+app.use(cors());
+app.use(bodyParser.json({ limit: '100kb' }));
+
+const limiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  message: { error: 'Too many requests' }
 });
+app.use('/api/', limiter);
 
+// API Key protection for device ingestion only
 function requireApiKey(req, res, next) {
-  if (req.headers["x-api-key"] !== API_KEY) {
-    return res.status(401).json({ error: "Invalid or missing API key" });
+  const key = req.headers['x-api-key'] || req.query.apiKey;
+  if (key !== API_KEY) {
+    return res.status(401).json({ error: 'Invalid API key' });
   }
   next();
 }
 
-// ---------------------------------------------------------------------------
-// STORE: keyed by deviceId. Every device that has ever POSTed to /api/ingest
-// shows up automatically in the command center — this is the multi-device
-// fleet architecture. No hardcoded device list.
-// ---------------------------------------------------------------------------
-const STORE = {}; // deviceId -> { latest, history: [], alerts: [], audit: [], incidents: [], config, configHistory: [] }
-
-function ensureDevice(id) {
-  if (!STORE[id]) {
-    STORE[id] = {
-      latest: null,
-      history: [],       // capped ring of recent readings for graphing
-      alerts: [],         // state-change events
-      audit: [],          // every ingest, for CSV export
-      incidents: {},       // incidentId -> incident record
-      config: { max: 8.0, min: 2.0, profile: "VACCINE", ack: false },
-      configHistory: [],
-      lastSeq: null,
-      lastSeenAt: null,
-    };
-  }
-  return STORE[id];
+// ===================== HELPERS =====================
+function addAudit(event, details = '') {
+  auditLog.unshift({
+    ts: new Date().toISOString(),
+    event,
+    details
+  });
+  if (auditLog.length > 200) auditLog.pop();
 }
 
-const HISTORY_CAP = 2000;
-const AUDIT_CAP = 5000;
+function createIncident(deviceId, data) {
+  const id = `INC-${new Date().toISOString().slice(0,10).replace(/-/g,'')}-${String(incidents.length + 1).padStart(3,'0')}`;
+  const incident = {
+    id,
+    deviceId,
+    start: new Date().toISOString(),
+    end: null,
+    status: 'OPEN',
+    peakTemp: data.temperature,
+    minTemp: data.temperature,
+    reason: data.state,
+    risk: data.risk,
+    acknowledged: false,
+    ackBy: null,
+    ackAt: null
+  };
+  incidents.unshift(incident);
+  return incident;
+}
 
-// ---------------------------------------------------------------------------
-// INGEST — device pushes its status here every ~4s
-// ---------------------------------------------------------------------------
-app.post("/api/ingest", requireApiKey, (req, res) => {
-  const d = req.body;
-  if (!d || typeof d !== "object" || !d.deviceId) {
-    return res.status(400).json({ error: "Malformed payload" });
-  }
-  const dev = ensureDevice(d.deviceId);
+// ===================== API ROUTES =====================
 
-  // Data-integrity monitoring: detect duplicate / out-of-order sequence numbers.
-  let integrityNote = null;
-  if (typeof d.seq === "number" && dev.lastSeq !== null) {
-    if (d.seq === dev.lastSeq) integrityNote = "Duplicate packet (seq repeated)";
-    else if (d.seq < dev.lastSeq) integrityNote = "Out-of-order packet";
-    else if (d.seq > dev.lastSeq + 1) integrityNote = `Gap detected: ${d.seq - dev.lastSeq - 1} packet(s) missing`;
-  }
-  dev.lastSeq = d.seq ?? dev.lastSeq;
-  dev.lastSeenAt = Date.now();
+// Device pushes data here
+app.post('/api/ingest', requireApiKey, (req, res) => {
+  try {
+    const data = req.body;
+    const deviceId = data.deviceId || req.headers['x-device-id'] || 'UNKNOWN';
 
-  const record = { ...d, receivedAt: new Date().toISOString(), integrityNote };
-  dev.latest = record;
+    if (!data.temperature && data.temperature !== 0) {
+      return res.status(400).json({ error: 'Missing temperature' });
+    }
 
-  dev.history.push({ t: record.receivedAt, temp: d.temp, hum: d.hum, vib: d.vib, risk: d.risk, state: d.state });
-  if (dev.history.length > HISTORY_CAP) dev.history.shift();
+    const now = new Date().toISOString();
+    const record = {
+      ...data,
+      deviceId,
+      receivedAt: now,
+      serverTs: Date.now()
+    };
 
-  dev.audit.push(record);
-  if (dev.audit.length > AUDIT_CAP) dev.audit.shift();
+    // Store latest
+    const prev = devices[deviceId];
+    devices[deviceId] = record;
 
-  // Track alert transitions server-side too (independent record from firmware log)
-  const lastAlert = dev.alerts[dev.alerts.length - 1];
-  if (!lastAlert || lastAlert.state !== d.state) {
-    dev.alerts.push({
-      time: new Date().toISOString(),
-      state: d.state,
-      reason: d.stateReason,
-      temp: d.temp,
-      incidentId: d.incidentId,
-      severity: d.state === "DANGER" ? "CRITICAL" : d.state === "WARNING" ? "WARNING" : d.state === "SENSOR FAULT" ? "FAULT" : "INFO",
-    });
-  }
+    // History
+    if (!history[deviceId]) history[deviceId] = [];
+    history[deviceId].unshift(record);
+    if (history[deviceId].length > MAX_HISTORY) history[deviceId].pop();
 
-  // Maintain incident records for the Incident Investigation Mode screen.
-  if (d.incidentId) {
-    if (!dev.incidents[d.incidentId]) {
-      dev.incidents[d.incidentId] = {
-        id: d.incidentId,
-        deviceId: d.deviceId,
-        openedAt: new Date().toISOString(),
-        maxTemp: d.temp,
-        minTemp: d.temp,
-        vibrationEvents: 0,
-        acknowledged: d.incidentAck || false,
-        closedAt: null,
+    // Detect state change → create alert / incident
+    if (prev && prev.state !== data.state) {
+      const alert = {
+        id: Date.now(),
+        deviceId,
+        ts: now,
+        from: prev.state,
+        to: data.state,
+        temperature: data.temperature,
+        risk: data.risk,
+        message: `State changed: ${prev.state} → ${data.state}`
       };
+      alerts.unshift(alert);
+      if (alerts.length > 100) alerts.pop();
+
+      if (data.state === 'BREACH' || data.state === 'SENSOR_FAULT') {
+        createIncident(deviceId, data);
+        addAudit('INCIDENT_OPENED', `${deviceId} - ${data.state}`);
+      }
+      if (prev.state === 'BREACH' && data.state === 'SAFE') {
+        // close latest open incident
+        const open = incidents.find(i => i.deviceId === deviceId && i.status === 'OPEN');
+        if (open) {
+          open.end = now;
+          open.status = 'CLOSED';
+          addAudit('INCIDENT_CLOSED', open.id);
+        }
+      }
     }
-    const inc = dev.incidents[d.incidentId];
-    inc.maxTemp = Math.max(inc.maxTemp, d.temp);
-    inc.minTemp = Math.min(inc.minTemp, d.temp);
-    inc.acknowledged = d.incidentAck || inc.acknowledged;
-    if (d.state !== "DANGER" && !inc.closedAt) inc.closedAt = new Date().toISOString();
+
+    addAudit('DATA_INGEST', deviceId);
+    res.json({ ok: true, received: now });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
   }
-
-  res.json({ ok: true, integrityNote });
 });
 
-// ---------------------------------------------------------------------------
-// Device-facing config pull (thresholds + ack flag), and dashboard config push
-// ---------------------------------------------------------------------------
-app.get("/api/config", requireApiKey, (req, res) => {
-  const dev = ensureDevice(req.query.deviceId || "unknown");
-  res.json(dev.config);
-});
-
-app.post("/api/config/:deviceId", (req, res) => {
-  const dev = ensureDevice(req.params.deviceId);
-  const { max, min, profile } = req.body;
-  if (typeof max === "number" && typeof min === "number") {
-    if (max <= min || max - min < 1 || min < -40 || max > 60) {
-      return res.status(400).json({ error: "Invalid configuration: check min/max range" });
-    }
-    dev.config.max = max;
-    dev.config.min = min;
+// Latest reading for one or all devices
+app.get('/api/latest', (req, res) => {
+  const deviceId = req.query.deviceId;
+  if (deviceId) {
+    return res.json(devices[deviceId] || null);
   }
-  if (profile) dev.config.profile = profile;
-  dev.configHistory.push({ time: new Date().toISOString(), config: { ...dev.config } });
-  res.json({ ok: true, config: dev.config });
+  res.json(devices);
 });
 
-app.post("/api/ack/:deviceId", (req, res) => {
-  const dev = ensureDevice(req.params.deviceId);
-  dev.config.ack = true;
-  const openIncident = Object.values(dev.incidents).find((i) => !i.acknowledged && !i.closedAt);
-  if (openIncident) openIncident.acknowledged = true;
-  res.json({ ok: true });
+// History
+app.get('/api/history', (req, res) => {
+  const deviceId = req.query.deviceId || Object.keys(devices)[0];
+  const limit = Math.min(parseInt(req.query.limit) || 100, 500);
+  const list = history[deviceId] || [];
+  res.json(list.slice(0, limit));
 });
 
-// ---------------------------------------------------------------------------
-// Read APIs
-// ---------------------------------------------------------------------------
-app.get("/api/devices", (req, res) => {
-  res.json(Object.keys(STORE).map((id) => ({
-    deviceId: id,
-    label: STORE[id].latest?.deviceLabel || id,
-    state: STORE[id].latest?.state || "UNKNOWN",
-    lastSeenAt: STORE[id].lastSeenAt,
-    online: STORE[id].lastSeenAt && (Date.now() - STORE[id].lastSeenAt < 15000),
-  })));
+// Alerts
+app.get('/api/alerts', (req, res) => {
+  res.json(alerts.slice(0, 50));
 });
 
-app.get("/api/latest/:deviceId", (req, res) => {
-  const dev = STORE[req.params.deviceId];
-  if (!dev || !dev.latest) return res.status(404).json({ error: "No data yet for this device" });
-  res.json(dev.latest);
+// Audit log
+app.get('/api/audit', (req, res) => {
+  res.json(auditLog.slice(0, 100));
 });
 
-app.get("/api/history/:deviceId", (req, res) => {
-  const dev = STORE[req.params.deviceId];
-  if (!dev) return res.status(404).json({ error: "Unknown device" });
-  const hours = parseFloat(req.query.hours || "6");
-  const cutoff = Date.now() - hours * 3600 * 1000;
-  res.json(dev.history.filter((h) => new Date(h.t).getTime() >= cutoff));
+// Incidents
+app.get('/api/incidents', (req, res) => {
+  res.json(incidents.slice(0, 30));
 });
 
-app.get("/api/alerts/:deviceId", (req, res) => {
-  const dev = STORE[req.params.deviceId];
-  if (!dev) return res.status(404).json({ error: "Unknown device" });
-  res.json(dev.alerts.slice(-100).reverse());
+// Acknowledge incident
+app.post('/api/incidents/:id/ack', (req, res) => {
+  const inc = incidents.find(i => i.id === req.params.id);
+  if (!inc) return res.status(404).json({ error: 'Not found' });
+  inc.acknowledged = true;
+  inc.ackBy = req.body.by || 'Dashboard User';
+  inc.ackAt = new Date().toISOString();
+  addAudit('INCIDENT_ACK', inc.id);
+  res.json(inc);
 });
 
-app.get("/api/incidents/:deviceId", (req, res) => {
-  const dev = STORE[req.params.deviceId];
-  if (!dev) return res.status(404).json({ error: "Unknown device" });
-  res.json(Object.values(dev.incidents).reverse());
-});
+// Stats / Compliance
+app.get('/api/stats', (req, res) => {
+  const deviceId = req.query.deviceId || Object.keys(devices)[0];
+  const list = history[deviceId] || [];
+  if (list.length === 0) return res.json({ compliance: 100, count: 0 });
 
-app.get("/api/prediction/:deviceId", (req, res) => {
-  const dev = STORE[req.params.deviceId];
-  if (!dev || !dev.latest) return res.status(404).json({ error: "No data" });
+  let safe = 0;
+  let minT = 999, maxT = -999, sum = 0;
+  list.forEach(r => {
+    if (r.temperature >= 2 && r.temperature <= 8) safe++;
+    if (r.temperature < minT) minT = r.temperature;
+    if (r.temperature > maxT) maxT = r.temperature;
+    sum += r.temperature;
+  });
+
   res.json({
-    trend: dev.latest.trend,
-    rateOfChange: dev.latest.rateOfChange,
-    breachEtaSec: dev.latest.breachEtaSec,
-    predictedRisk: dev.latest.predictedRisk,
-    note: dev.latest.breachEtaSec > 0
-      ? `At the current trend, the threshold may be reached in about ${Math.round(dev.latest.breachEtaSec / 60)} min. This is an estimate, not a guarantee.`
-      : "Prediction unavailable — insufficient trend data or temperature is stable.",
+    compliance: ((safe / list.length) * 100).toFixed(1),
+    minTemp: minT.toFixed(1),
+    maxTemp: maxT.toFixed(1),
+    avgTemp: (sum / list.length).toFixed(1),
+    totalReadings: list.length,
+    openIncidents: incidents.filter(i => i.status === 'OPEN').length
   });
 });
 
-// What-if simulator — pure calculation, doesn't touch firmware or real data.
-app.get("/api/whatif", (req, res) => {
-  const current = parseFloat(req.query.current);
-  const rate = parseFloat(req.query.rate); // deg C per minute, can be negative
-  const threshold = parseFloat(req.query.threshold);
-  if ([current, rate, threshold].some((v) => Number.isNaN(v))) {
-    return res.status(400).json({ error: "current, rate, threshold (all numbers) required" });
+// Prediction / What-if (simple estimate)
+app.get('/api/prediction', (req, res) => {
+  const deviceId = req.query.deviceId || Object.keys(devices)[0];
+  const latest = devices[deviceId];
+  if (!latest) return res.json({ available: false });
+
+  const rate = latest.rateCperMin || 0;
+  let eta = null;
+  if (rate > 0.05 && latest.temperature < 8) {
+    eta = Math.round(((8 - latest.temperature) / rate) * 60); // seconds
+  } else if (rate < -0.05 && latest.temperature > 2) {
+    eta = Math.round(((latest.temperature - 2) / (-rate)) * 60);
   }
-  if (rate === 0) return res.json({ etaMinutes: null, note: "Rate is zero — threshold will not be reached." });
-  const etaMinutes = (threshold - current) / rate;
-  if (etaMinutes < 0) return res.json({ etaMinutes: null, note: "Moving away from the threshold, not toward it." });
-  res.json({ etaMinutes: Math.round(etaMinutes * 10) / 10, note: `Estimated threshold crossing in ~${Math.round(etaMinutes)} min (simulation only — not real sensor data).` });
-});
 
-app.get("/api/summary/:deviceId", (req, res) => {
-  const dev = STORE[req.params.deviceId];
-  if (!dev || !dev.latest) return res.status(404).json({ error: "No data" });
-  const l = dev.latest;
-  const incidents = Object.values(dev.incidents);
-  const vibCorrelated = dev.alerts.filter((a) => a.reason && a.reason.toLowerCase().includes("shock")).length;
-  const text = `Device remained within the configured range for ${l.complianceScore?.toFixed(1)}% of monitored time. ` +
-    `${incidents.length} incident${incidents.length === 1 ? "" : "s"} recorded` +
-    (vibCorrelated ? `, including ${vibCorrelated} associated with a vibration event.` : ".") +
-    ` Current reliability score: ${l.reliability}%. Health: ${l.healthGrade}.`;
-  res.json({ summary: text, complianceScore: l.complianceScore, incidentCount: incidents.length, reliability: l.reliability });
-});
-
-app.get("/api/audit/:deviceId", (req, res) => {
-  const dev = STORE[req.params.deviceId];
-  if (!dev) return res.status(404).send("Unknown device");
-  let csv = "Timestamp,Temp(C),Humidity(%),Vibration,State,Risk,Compliance(%),Incident\n";
-  dev.audit.forEach((r) => {
-    csv += `${r.timestamp},${r.temp},${r.hum},${r.vib},${r.state},${r.risk},${r.complianceScore},${r.incidentId || ""}\n`;
+  res.json({
+    available: true,
+    currentTemp: latest.temperature,
+    rateCperMin: rate,
+    trend: latest.trend,
+    estimatedSecondsToThreshold: eta,
+    note: 'Estimate only – based on recent rate of change'
   });
-  res.setHeader("Content-Disposition", `attachment; filename=${req.params.deviceId}_audit.csv`);
-  res.setHeader("Content-Type", "text/csv");
+});
+
+// Device list / status
+app.get('/api/devices', (req, res) => {
+  const list = Object.keys(devices).map(id => ({
+    deviceId: id,
+    state: devices[id].state,
+    temperature: devices[id].temperature,
+    risk: devices[id].risk,
+    lastSeen: devices[id].receivedAt,
+    online: (Date.now() - devices[id].serverTs) < 30000
+  }));
+  res.json(list);
+});
+
+// Cloud status
+app.get('/api/cloud-status', (req, res) => {
+  res.json({
+    status: 'ONLINE',
+    devices: Object.keys(devices).length,
+    uptime: process.uptime(),
+    time: new Date().toISOString()
+  });
+});
+
+// CSV Export
+app.get('/api/export', (req, res) => {
+  const deviceId = req.query.deviceId || Object.keys(devices)[0];
+  const list = history[deviceId] || [];
+  let csv = 'timestamp,temperature,humidity,vibration,state,risk,trend\n';
+  list.forEach(r => {
+    csv += `${r.receivedAt},${r.temperature},${r.humidity || ''},${r.vibrationCount || 0},${r.state},${r.risk},${r.trend || ''}\n`;
+  });
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', `attachment; filename=vaxguard-${deviceId}.csv`);
   res.send(csv);
 });
 
-// One-click compliance evidence package (JSON — pipe into a PDF tool if needed)
-app.get("/api/export/:deviceId", (req, res) => {
-  const dev = STORE[req.params.deviceId];
-  if (!dev) return res.status(404).json({ error: "Unknown device" });
-  res.json({
-    deviceId: req.params.deviceId,
-    generatedAt: new Date().toISOString(),
-    latest: dev.latest,
-    incidents: Object.values(dev.incidents),
-    alerts: dev.alerts,
-    configHistory: dev.configHistory,
-    note: "Prototype-generated compliance package. Not a certified regulatory document.",
-  });
-});
-
-app.get("/api/cloud-status", (req, res) => {
-  res.json({ status: "online", devices: Object.keys(STORE).length, uptimeSec: Math.floor(process.uptime()) });
-});
-
-app.get("/api/diagnostics", (req, res) => {
-  res.json({
-    server: "ok",
-    memoryMB: Math.round(process.memoryUsage().rss / 1024 / 1024),
-    devicesTracked: Object.keys(STORE).length,
-    uptimeSec: Math.floor(process.uptime()),
-  });
-});
-
-// ---------------------------------------------------------------------------
-// DASHBOARD (single page, vanilla JS — no build step, works everywhere)
-// ---------------------------------------------------------------------------
-app.get("/", (req, res) => {
-  res.setHeader("Content-Type", "text/html");
-  res.send(DASHBOARD_HTML);
-});
-
-app.get("/device/:id", (req, res) => {
-  res.setHeader("Content-Type", "text/html");
-  res.send(DASHBOARD_HTML.replace("__PRESELECT_DEVICE__", req.params.id));
-});
-
-const DASHBOARD_HTML = `<!DOCTYPE html>
-<html>
+// ===================== DASHBOARD (Single Page) =====================
+app.get('/', (req, res) => {
+  res.send(`<!DOCTYPE html>
+<html lang="en">
 <head>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ColdChain Guardian — Command Center</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VAXGUARD PRO – Cold Chain Command Center</title>
 <style>
-:root{--bg:#0a0e1a;--card:#131a2b;--card2:#1a2338;--accent:#38bdf8;--safe:#4ade80;--warn:#fbbf24;--danger:#f87171;--text:#e2e8f0;--muted:#8291ab}
-*{box-sizing:border-box}
-body{margin:0;font-family:'Segoe UI',system-ui,Arial;background:var(--bg);color:var(--text)}
-header{padding:14px 18px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #1f2a44}
-header h1{font-size:18px;margin:0;color:var(--accent)}
-header .sub{font-size:11px;color:var(--muted)}
-nav{display:flex;gap:6px;padding:10px 14px;flex-wrap:wrap;border-bottom:1px solid #1f2a44}
-nav button{background:var(--card2);color:var(--muted);border:none;padding:8px 12px;border-radius:8px;font-size:12px;cursor:pointer}
-nav button.active{background:var(--accent);color:#031320;font-weight:700}
-main{padding:14px;max-width:1100px;margin:0 auto}
-.view{display:none}.view.active{display:block}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
-.card{background:var(--card);border:1px solid #1f2a44;border-radius:14px;padding:14px}
-.card .label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
-.card .value{font-size:22px;font-weight:700;margin-top:6px}
-.state-badge{display:inline-block;padding:6px 14px;border-radius:999px;font-weight:700;font-size:14px}
-.state-SAFE{background:rgba(74,222,128,.15);color:var(--safe)}
-.state-WARNING{background:rgba(251,191,36,.15);color:var(--warn)}
-.state-DANGER{background:rgba(248,113,113,.15);color:var(--danger);animation:pulse 1s infinite}
-.state-OFFLINE,.state-UNKNOWN{background:#2a3752;color:var(--muted)}
-.state-FAULT,.state-SENSOR\\ FAULT{background:rgba(248,113,113,.15);color:var(--danger)}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
-.device-card{cursor:pointer;transition:transform .15s}
-.device-card:hover{transform:translateY(-2px)}
-.twin-box{position:relative;width:180px;height:140px;margin:20px auto;border-radius:14px;border:3px solid #334;background:linear-gradient(180deg,#0f1830,#0a1120);display:flex;align-items:center;justify-content:center;transition:border-color .4s,box-shadow .4s}
-.twin-box .temp-fill{position:absolute;bottom:0;left:0;right:0;background:linear-gradient(180deg,rgba(56,189,248,.05),rgba(56,189,248,.35));transition:height .6s}
-.twin-box .lbl{position:relative;z-index:2;text-align:center;font-weight:700}
-.twin-box.vib{animation:shake .25s}
-@keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
-.log{background:var(--card2);border-radius:10px;padding:10px;font-size:12px;max-height:320px;overflow-y:auto}
-.log div{padding:5px 0;border-bottom:1px solid #223052}
-.btn{background:var(--accent);color:#031320;border:none;padding:10px 14px;border-radius:10px;font-weight:700;cursor:pointer}
-.btn.secondary{background:#223052;color:var(--text)}
-.btn.danger{background:var(--danger);color:#2a0000}
-input,select{background:#0e1526;border:1px solid #223052;color:var(--text);padding:8px;border-radius:8px;width:100%;margin:4px 0}
-.row{display:flex;gap:8px;flex-wrap:wrap}
-.small{font-size:11px;color:var(--muted)}
-canvas{width:100%;max-height:220px}
-a.link{color:var(--accent);text-decoration:none}
-.qr{background:#fff;padding:6px;border-radius:8px;display:inline-block}
-.mic-btn{width:60px;height:60px;border-radius:50%;border:none;background:var(--accent);font-size:22px;cursor:pointer}
-.mic-btn.listening{background:var(--danger);animation:pulse .8s infinite}
+  :root {
+    --bg: #0b0f19;
+    --card: #141b2d;
+    --border: #1e2a44;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --green: #22c55e;
+    --yellow: #eab308;
+    --red: #ef4444;
+    --blue: #3b82f6;
+    --purple: #a855f7;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+  .header {
+    background: linear-gradient(90deg, #0f172a, #1e293b);
+    padding: 14px 24px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  .logo { font-size: 1.4rem; font-weight: 700; letter-spacing: 1px; }
+  .logo span { color: var(--blue); }
+  .status-pill {
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+  .nav {
+    display: flex;
+    gap: 8px;
+    padding: 12px 24px;
+    background: #0f172a;
+    overflow-x: auto;
+    border-bottom: 1px solid var(--border);
+  }
+  .nav button {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 8px 16px;
+    border-radius: 8px;
+    cursor: pointer;
+    white-space: nowrap;
+    font-size: 0.85rem;
+  }
+  .nav button.active, .nav button:hover {
+    background: var(--blue);
+    color: white;
+    border-color: var(--blue);
+  }
+  .container { padding: 20px; max-width: 1400px; margin: 0 auto; }
+  .grid { display: grid; gap: 16px; }
+  .grid-4 { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+  .grid-2 { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px;
+  }
+  .card h3 { font-size: 0.85rem; color: var(--muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .big { font-size: 2.4rem; font-weight: 700; }
+  .state-SAFE { color: var(--green); }
+  .state-WARNING { color: var(--yellow); }
+  .state-BREACH, .state-SENSOR_FAULT { color: var(--red); }
+  .state-OFFLINE { color: var(--muted); }
+  .twin {
+    height: 220px;
+    background: linear-gradient(145deg, #1e293b, #0f172a);
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    overflow: hidden;
+  }
+  .box {
+    width: 120px;
+    height: 80px;
+    background: #334155;
+    border: 3px solid #64748b;
+    border-radius: 8px;
+    position: relative;
+    transition: all 0.4s;
+  }
+  .box.safe { border-color: var(--green); box-shadow: 0 0 20px rgba(34,197,94,0.4); }
+  .box.warn { border-color: var(--yellow); box-shadow: 0 0 20px rgba(234,179,8,0.4); }
+  .box.danger { border-color: var(--red); box-shadow: 0 0 25px rgba(239,68,68,0.5); animation: pulse 1.2s infinite; }
+  @keyframes pulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.05)} }
+  .temp-inside { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); font-weight: 700; font-size: 1.1rem; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; }
+  .btn {
+    background: var(--blue);
+    color: white;
+    border: none;
+    padding: 8px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.85rem;
+  }
+  .btn:hover { opacity: 0.9; }
+  .btn-danger { background: var(--red); }
+  .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  .muted { color: var(--muted); font-size: 0.8rem; }
+  .section { display: none; }
+  .section.active { display: block; }
+  .voice-btn { position: fixed; bottom: 24px; right: 24px; width: 56px; height: 56px; border-radius: 50%; background: var(--purple); border: none; color: white; font-size: 1.4rem; cursor: pointer; box-shadow: 0 4px 20px rgba(168,85,247,0.4); z-index: 200; }
+  @media (max-width: 600px) {
+    .big { font-size: 1.8rem; }
+    .header { flex-direction: column; gap: 8px; }
+  }
 </style>
 </head>
 <body>
-<header>
-  <div><h1>❄ ColdChain Guardian</h1><div class="sub">Cloud Command Center — Multi-Device</div></div>
-  <div class="small" id="cloudStatus">Cloud: checking...</div>
-</header>
-
-<nav>
-  <button class="active" onclick="showView('fleet',this)">Command Center</button>
-  <button onclick="showView('twin',this)">Digital Twin</button>
-  <button onclick="showView('monitor',this)">Live Monitor</button>
-  <button onclick="showView('timeline',this)">Exposure Timeline</button>
-  <button onclick="showView('incidents',this)">Incidents</button>
-  <button onclick="showView('analytics',this)">Analytics</button>
-  <button onclick="showView('whatif',this)">What-If</button>
-  <button onclick="showView('health',this)">Device Health</button>
-  <button onclick="showView('settings',this)">Settings</button>
-  <button onclick="showView('voice',this)">Voice</button>
-</nav>
-
-<main>
-
-<div class="view active" id="fleet">
-  <p class="small">Every device that has posted to <code>/api/ingest</code> appears automatically. Click a card to open it.</p>
-  <div class="grid" id="fleetGrid"></div>
-</div>
-
-<div class="view" id="twin">
-  <div class="row" style="justify-content:space-between;align-items:center">
-    <h2 style="margin:4px 0">Digital Twin — <span id="twinDeviceName">-</span></h2>
-    <select id="deviceSelect" onchange="selectDevice(this.value)"></select>
+  <div class="header">
+    <div class="logo">VAX<span>GUARD</span> PRO</div>
+    <div style="display:flex;gap:12px;align-items:center;">
+      <span id="cloudPill" class="status-pill" style="background:#166534;color:#bbf7d0;">CLOUD ONLINE</span>
+      <span id="deviceCount" class="muted">0 devices</span>
+    </div>
   </div>
-  <div class="twin-box" id="twinBox"><div class="temp-fill" id="twinFill"></div><div class="lbl"><div id="twinTemp" style="font-size:26px">--°C</div><div id="twinState" class="small">--</div></div></div>
-  <div class="grid">
-    <div class="card"><div class="label">Vibration</div><div class="value" id="twinVib">--</div></div>
-    <div class="card"><div class="label">Compliance</div><div class="value" id="twinCompliance">--</div></div>
-    <div class="card"><div class="label">Reliability</div><div class="value" id="twinReliability">--</div></div>
-    <div class="card"><div class="label">Data Quality</div><div class="value" id="twinQuality">--</div></div>
+
+  <div class="nav" id="nav">
+    <button class="active" data-tab="overview">Overview</button>
+    <button data-tab="twin">Digital Twin</button>
+    <button data-tab="live">Live Monitor</button>
+    <button data-tab="analytics">Analytics</button>
+    <button data-tab="prediction">Prediction</button>
+    <button data-tab="alerts">Alerts & Incidents</button>
+    <button data-tab="health">Device Health</button>
+    <button data-tab="audit">Audit Log</button>
+    <button data-tab="demo">Demo Mode</button>
   </div>
-  <div class="card" style="margin-top:10px">
-    <div class="label">QR Device Identity</div>
-    <div class="qr" id="qrHolder"></div>
-    <div class="small">Scan to open this device's live page directly.</div>
+
+  <div class="container">
+    <!-- OVERVIEW -->
+    <div id="overview" class="section active">
+      <div class="grid grid-4" style="margin-bottom:20px;">
+        <div class="card">
+          <h3>Current Temperature</h3>
+          <div class="big" id="ovTemp">--.-°C</div>
+          <div class="muted" id="ovHum">Humidity: --%</div>
+        </div>
+        <div class="card">
+          <h3>System State</h3>
+          <div class="big" id="ovState">--</div>
+          <div class="muted" id="ovReason">Waiting for data...</div>
+        </div>
+        <div class="card">
+          <h3>Risk Score</h3>
+          <div class="big" id="ovRisk">--%</div>
+          <div class="muted">Prototype risk index</div>
+        </div>
+        <div class="card">
+          <h3>Compliance</h3>
+          <div class="big" id="ovComp">--%</div>
+          <div class="muted">Time inside 2–8°C</div>
+        </div>
+      </div>
+      <div class="grid grid-2">
+        <div class="card">
+          <h3>Quick Status</h3>
+          <p>Device: <span id="ovDevice">--</span></p>
+          <p>Trend: <span id="ovTrend">--</span></p>
+          <p>Vibration: <span id="ovVib">--</span></p>
+          <p>Sensor Confidence: <span id="ovConf">--%</span></p>
+          <p>Last Update: <span id="ovLast">--</span></p>
+        </div>
+        <div class="card">
+          <h3>Advisory</h3>
+          <p id="ovAdvisory" style="font-size:1.1rem;line-height:1.5;">Waiting for telemetry...</p>
+          <p class="muted" id="ovCorr" style="margin-top:8px;"></p>
+        </div>
+      </div>
+    </div>
+
+    <!-- DIGITAL TWIN -->
+    <div id="twin" class="section">
+      <div class="card">
+        <h3>Digital Twin – Virtual Vaccine Box</h3>
+        <div class="twin" id="twinBox">
+          <div class="box" id="visualBox">
+            <div class="temp-inside" id="twinTemp">--°C</div>
+          </div>
+          <div style="margin-top:16px;text-align:center;">
+            <div id="twinState" style="font-size:1.3rem;font-weight:700;">--</div>
+            <div class="muted" id="twinSub">Real-time virtual representation</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- LIVE -->
+    <div id="live" class="section">
+      <div class="grid grid-4">
+        <div class="card"><h3>Temperature</h3><div class="big" id="liveTemp">--</div></div>
+        <div class="card"><h3>Humidity</h3><div class="big" id="liveHum">--</div></div>
+        <div class="card"><h3>Vibration Count</h3><div class="big" id="liveVib">--</div></div>
+        <div class="card"><h3>RSSI</h3><div class="big" id="liveRssi">--</div></div>
+      </div>
+      <div class="card" style="margin-top:16px;">
+        <h3>Live Feed</h3>
+        <div class="muted">Data refreshes every 4 seconds • <span id="liveIndicator" style="color:var(--green);">● LIVE</span></div>
+      </div>
+    </div>
+
+    <!-- ANALYTICS -->
+    <div id="analytics" class="section">
+      <div class="grid grid-2">
+        <div class="card">
+          <h3>Statistics</h3>
+          <p>Min Temp: <span id="anMin">--</span>°C</p>
+          <p>Max Temp: <span id="anMax">--</span>°C</p>
+          <p>Average: <span id="anAvg">--</span>°C</p>
+          <p>Total Readings: <span id="anCount">--</span></p>
+          <p>Open Incidents: <span id="anInc">--</span></p>
+        </div>
+        <div class="card">
+          <h3>Export</h3>
+          <button class="btn" onclick="window.location='/api/export'">Download CSV Report</button>
+          <p class="muted" style="margin-top:10px;">Includes temperature, humidity, vibration, state, risk & trend</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- PREDICTION -->
+    <div id="prediction" class="section">
+      <div class="card">
+        <h3>Predictive Engine (Estimate Only)</h3>
+        <p>Current Rate: <span id="predRate">--</span> °C/min</p>
+        <p>Trend: <span id="predTrend">--</span></p>
+        <p id="predEta" style="font-size:1.2rem;margin:12px 0;">Collecting data...</p>
+        <p class="muted">This is a software estimate based on recent temperature slope. Not a guarantee.</p>
+      </div>
+      <div class="card" style="margin-top:16px;">
+        <h3>What-If Simulation</h3>
+        <p>Assume temperature rises at <input type="number" id="whatRate" value="0.2" step="0.05" style="width:70px;padding:4px;border-radius:4px;border:1px solid var(--border);background:#0f172a;color:white;"> °C/min</p>
+        <button class="btn" style="margin-top:8px;" onclick="runWhatIf()">Calculate Crossing Time</button>
+        <p id="whatResult" style="margin-top:12px;font-size:1.1rem;"></p>
+      </div>
+    </div>
+
+    <!-- ALERTS -->
+    <div id="alerts" class="section">
+      <div class="card">
+        <h3>Recent Alerts</h3>
+        <div id="alertList" class="muted">No alerts yet</div>
+      </div>
+      <div class="card" style="margin-top:16px;">
+        <h3>Incidents</h3>
+        <div id="incidentList" class="muted">No incidents</div>
+      </div>
+    </div>
+
+    <!-- HEALTH -->
+    <div id="health" class="section">
+      <div class="grid grid-2">
+        <div class="card">
+          <h3>Device Health</h3>
+          <p>Status: <span id="hOnline">--</span></p>
+          <p>Last Seen: <span id="hLast">--</span></p>
+          <p>Sensor Confidence: <span id="hConf">--</span></p>
+          <p>Sensor Fault: <span id="hFault">--</span></p>
+          <p>Reconnects: <span id="hRecon">--</span></p>
+        </div>
+        <div class="card">
+          <h3>Cloud</h3>
+          <p>Server Uptime: <span id="hUptime">--</span> s</p>
+          <p>Active Devices: <span id="hDevices">--</span></p>
+        </div>
+      </div>
+    </div>
+
+    <!-- AUDIT -->
+    <div id="audit" class="section">
+      <div class="card">
+        <h3>Audit Log</h3>
+        <div id="auditList" style="max-height:400px;overflow-y:auto;" class="muted">Loading...</div>
+      </div>
+    </div>
+
+    <!-- DEMO -->
+    <div id="demo" class="section">
+      <div class="card">
+        <h3>Demo Mode Controls</h3>
+        <p class="muted" style="margin-bottom:12px;">These buttons only affect the cloud display for demonstration. Real device continues normal operation.</p>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;">
+          <button class="btn" onclick="simulate('SAFE',5.2)">SAFE 5.2°C</button>
+          <button class="btn" onclick="simulate('WARNING',7.6)">WARNING 7.6°C</button>
+          <button class="btn btn-danger" onclick="simulate('BREACH',9.1)">BREACH 9.1°C</button>
+          <button class="btn" onclick="simulate('SAFE',5.5)">RECOVERY</button>
+          <button class="btn btn-outline" onclick="simulate('SENSOR_FAULT',null)">SENSOR FAULT</button>
+        </div>
+      </div>
+    </div>
   </div>
-</div>
 
-<div class="view" id="monitor">
-  <div class="grid">
-    <div class="card"><div class="label">Temperature</div><div class="value" id="mTemp">--</div></div>
-    <div class="card"><div class="label">Humidity</div><div class="value" id="mHum">--</div></div>
-    <div class="card"><div class="label">Risk</div><div class="value" id="mRisk">--</div></div>
-    <div class="card"><div class="label">Trend</div><div class="value" id="mTrend">--</div></div>
-    <div class="card"><div class="label">RSSI</div><div class="value" id="mRssi">--</div></div>
-    <div class="card"><div class="label">Latency</div><div class="value" id="mLatency">--</div></div>
-    <div class="card"><div class="label">Sensor Confidence</div><div class="value" id="mConf">--</div></div>
-    <div class="card"><div class="label">Anomaly</div><div class="value" id="mAnomaly">--</div></div>
-  </div>
-  <div class="card" style="margin-top:10px"><div class="label">Temperature Trend</div><canvas id="chart"></canvas></div>
-</div>
-
-<div class="view" id="timeline">
-  <h2>Vaccine/Reagent Exposure Timeline</h2>
-  <div class="log" id="timelineLog">No events yet</div>
-</div>
-
-<div class="view" id="incidents">
-  <h2>Incident Investigation Mode</h2>
-  <div id="incidentList"></div>
-  <div class="row" style="margin-top:10px">
-    <button class="btn" onclick="ackIncident()">ACKNOWLEDGE INCIDENT</button>
-    <button class="btn secondary" onclick="downloadAudit()">📄 Audit CSV</button>
-    <button class="btn secondary" onclick="downloadExport()">📦 Compliance Evidence Package</button>
-  </div>
-  <div class="card" style="margin-top:10px"><div class="label">Executive Summary</div><div id="execSummary" class="small">--</div></div>
-</div>
-
-<div class="view" id="analytics">
-  <h2>Thermal Stress, Correlation &amp; Anomaly</h2>
-  <div class="grid">
-    <div class="card"><div class="label">Thermal Stress Index</div><div class="value" id="aStress">--</div></div>
-    <div class="card"><div class="label">Event Correlation</div><div class="value" id="aCorr" style="font-size:14px">--</div></div>
-    <div class="card"><div class="label">Adaptive Baseline</div><div class="value" id="aBaseline" style="font-size:14px">--</div></div>
-    <div class="card"><div class="label">MTTR / MTBI</div><div class="value" id="aMttr" style="font-size:14px">--</div></div>
-  </div>
-</div>
-
-<div class="view" id="whatif">
-  <h2>What-If Simulator</h2>
-  <p class="small">Doesn't touch real sensor data — pure calculation for demos.</p>
-  <div class="card">
-    <label class="small">Current Temperature (°C)</label><input id="wiCurrent" type="number" value="6.0">
-    <label class="small">Rate of change (°C/min, negative = falling)</label><input id="wiRate" type="number" value="0.2">
-    <label class="small">Threshold (°C)</label><input id="wiThreshold" type="number" value="8.0">
-    <button class="btn" onclick="runWhatIf()">Simulate</button>
-    <div id="wiResult" class="small" style="margin-top:10px"></div>
-  </div>
-</div>
-
-<div class="view" id="health">
-  <h2>Device Health &amp; Predictive Maintenance</h2>
-  <div class="grid">
-    <div class="card"><div class="label">Health Grade</div><div class="value" id="hGrade">--</div></div>
-    <div class="card"><div class="label">Reconnects</div><div class="value" id="hReconnects">--</div></div>
-    <div class="card"><div class="label">Cloud</div><div class="value" id="hCloud">--</div></div>
-    <div class="card"><div class="label">Uptime</div><div class="value" id="hUptime">--</div></div>
-  </div>
-  <div class="card" style="margin-top:10px"><div class="label">Maintenance Recommendation</div><div id="hMaint" class="small">--</div></div>
-  <button class="btn secondary" style="margin-top:10px" onclick="runDiagnostics()">RUN SYSTEM DIAGNOSTICS</button>
-  <div id="diagResult" class="small" style="margin-top:8px"></div>
-</div>
-
-<div class="view" id="settings">
-  <h2>Device Configuration</h2>
-  <div class="card">
-    <label class="small">Profile</label>
-    <select id="cfgProfile"><option value="VACCINE">Vaccine cold-chain (2-8C default)</option><option value="REAGENT">Sensitive reagent (custom range)</option></select>
-    <label class="small">Min Temp (°C)</label><input id="cfgMin" type="number" step="0.1">
-    <label class="small">Max Temp (°C)</label><input id="cfgMax" type="number" step="0.1">
-    <button class="btn" onclick="saveConfig()">Save (validated server-side)</button>
-    <div id="cfgMsg" class="small" style="margin-top:6px"></div>
-  </div>
-</div>
-
-<div class="view" id="voice">
-  <h2>Voice Assistant — Two-Way</h2>
-  <p class="small">Tap the mic and ask things like "what is the temperature", "is it safe", "any alerts", "acknowledge incident", "run diagnostics". It answers out loud using live data — nothing is spoken automatically while idle.</p>
-  <div style="text-align:center"><button class="mic-btn" id="micBtn" onclick="toggleListen()">🎤</button></div>
-  <div class="log" id="voiceTranscript" style="margin-top:14px">No conversation yet</div>
-</div>
-
-</main>
+  <button class="voice-btn" id="voiceBtn" title="Voice Assistant">🎤</button>
 
 <script>
-let selectedDevice = "__PRESELECT_DEVICE__" !== "__PRESELECT_DEVICE__".replace("__","") ? null : "__PRESELECT_DEVICE__";
-if (selectedDevice && selectedDevice.indexOf("PRESELECT") >= 0) selectedDevice = null;
-let latestData = null;
+  let currentDevice = null;
+  let voiceEnabled = false;
 
-function showView(id, btn){
-  document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
-  document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
-  document.getElementById(id).classList.add('active');
-  if(btn) btn.classList.add('active');
-}
-
-async function loadFleet(){
-  const r = await fetch('/api/devices');
-  const devices = await r.json();
-  const grid = document.getElementById('fleetGrid');
-  const sel = document.getElementById('deviceSelect');
-  grid.innerHTML = ''; sel.innerHTML = '';
-  devices.forEach(d=>{
-    const card = document.createElement('div');
-    card.className = 'card device-card';
-    card.onclick = ()=>{ selectDevice(d.deviceId); showView('twin', document.querySelectorAll('nav button')[1]); };
-    card.innerHTML = '<div class="label">'+d.deviceId+'</div><div class="value">'+d.label+'</div>' +
-      '<span class="state-badge state-'+d.state.replace(' ','\\\\ ')+'">'+d.state+'</span>' +
-      '<div class="small" style="margin-top:6px">'+(d.online?'🟢 Online':'⚪ Last seen '+(d.lastSeenAt?new Date(d.lastSeenAt).toLocaleTimeString():'never'))+'</div>';
-    grid.appendChild(card);
-    const opt = document.createElement('option'); opt.value=d.deviceId; opt.innerText=d.deviceId; sel.appendChild(opt);
+  // Navigation
+  document.querySelectorAll('.nav button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.nav button').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+      btn.classList.add('active');
+      document.getElementById(btn.dataset.tab).classList.add('active');
+    });
   });
-  if(!selectedDevice && devices.length){ selectedDevice = devices[0].deviceId; }
-  if(selectedDevice) document.getElementById('deviceSelect').value = selectedDevice;
-}
 
-function selectDevice(id){ selectedDevice = id; refreshAll(); }
-
-async function refreshAll(){
-  if(!selectedDevice) return;
-  let r;
-  try { r = await fetch('/api/latest/'+selectedDevice); } catch(e){ return; }
-  if(!r.ok) return;
-  const d = await r.json();
-  latestData = d;
-
-  // Digital twin
-  document.getElementById('twinDeviceName').innerText = d.deviceLabel || selectedDevice;
-  document.getElementById('twinTemp').innerText = d.temp + '°C';
-  document.getElementById('twinState').innerText = d.state + ' — ' + (d.stateReason||'');
-  const fillPct = Math.max(0, Math.min(100, ((d.temp - (d.tempMin-3)) / ((d.tempMax+3)-(d.tempMin-3)))*100));
-  document.getElementById('twinFill').style.height = fillPct + '%';
-  const box = document.getElementById('twinBox');
-  const color = d.state==='SAFE' ? '#4ade80' : d.state==='WARNING' ? '#fbbf24' : '#f87171';
-  box.style.borderColor = color; box.style.boxShadow = '0 0 24px '+color+'55';
-  document.getElementById('twinVib').innerText = d.vib + ' (' + d.vibSeverity + ')';
-  document.getElementById('twinCompliance').innerText = d.complianceScore + '%';
-  document.getElementById('twinReliability').innerText = d.reliability + '%';
-  document.getElementById('twinQuality').innerText = d.dataQuality + '%';
-  document.getElementById('qrHolder').innerHTML = '<img width="120" height="120" src="https://api.qrserver.com/v1/create-qr-code/?size=120x120&data='+encodeURIComponent(location.origin+'/device/'+selectedDevice)+'">';
-
-  // Monitor
-  document.getElementById('mTemp').innerText = d.temp+'°C';
-  document.getElementById('mHum').innerText = d.hum+'%';
-  document.getElementById('mRisk').innerText = d.risk+'%';
-  document.getElementById('mTrend').innerText = d.trend;
-  document.getElementById('mRssi').innerText = d.rssi+' dBm';
-  document.getElementById('mLatency').innerText = d.cloudLatencyMs+' ms';
-  document.getElementById('mConf').innerText = d.confidence+'%';
-  document.getElementById('mAnomaly').innerText = d.anomaly ? ('⚠ '+d.anomalyMsg) : 'None';
-
-  // Timeline
-  const alertsR = await fetch('/api/alerts/'+selectedDevice);
-  const alerts = await alertsR.json();
-  document.getElementById('timelineLog').innerHTML = alerts.map(a=>'<div>['+new Date(a.time).toLocaleString()+'] <b>'+a.state+'</b> — '+(a.reason||'')+'</div>').join('') || 'No events yet';
-
-  // Incidents
-  const incR = await fetch('/api/incidents/'+selectedDevice);
-  const incs = await incR.json();
-  document.getElementById('incidentList').innerHTML = incs.map(i=>
-    '<div class="card" style="margin-bottom:8px"><b>'+i.id+'</b> — '+(i.acknowledged?'✅ Acknowledged':'🔴 Unacknowledged')+
-    '<div class="small">Max '+i.maxTemp+'°C / Min '+i.minTemp+'°C — opened '+new Date(i.openedAt).toLocaleString()+(i.closedAt?(' — closed '+new Date(i.closedAt).toLocaleString()):' — ONGOING')+'</div></div>'
-  ).join('') || '<p class="small">No incidents recorded.</p>';
-
-  const sumR = await fetch('/api/summary/'+selectedDevice);
-  if(sumR.ok){ const s = await sumR.json(); document.getElementById('execSummary').innerText = s.summary; }
-
-  // Analytics
-  document.getElementById('aStress').innerText = d.thermalStressIndex;
-  document.getElementById('aCorr').innerText = d.correlation + ' ('+d.correlationConfidence+')';
-  document.getElementById('aBaseline').innerText = 'Mean '+d.baselineMean+'°C, σ '+d.baselineStdDev;
-  document.getElementById('aMttr').innerText = 'MTTR '+d.mttrSec+'s / MTBI '+d.mtbiSec+'s';
-
-  // Health
-  document.getElementById('hGrade').innerText = d.healthGrade;
-  document.getElementById('hReconnects').innerText = d.reconnects;
-  document.getElementById('hCloud').innerText = d.cloudReachable ? 'Reachable' : 'Unreachable';
-  document.getElementById('hUptime').innerText = Math.floor(d.uptimeSec/60)+' min';
-  document.getElementById('hMaint').innerText = d.maintenanceMsg;
-
-  // Settings defaults
-  document.getElementById('cfgMin').value = d.tempMin;
-  document.getElementById('cfgMax').value = d.tempMax;
-  document.getElementById('cfgProfile').value = d.profile;
-
-  document.getElementById('cloudStatus').innerText = 'Cloud: online — '+Object.keys(1).length+' req ok';
-
-  // Chart
-  const histR = await fetch('/api/history/'+selectedDevice+'?hours=6');
-  const hist = await histR.json();
-  drawChart(hist.map(h=>h.temp), d.tempMin, d.tempMax);
-}
-
-function drawChart(temps, tmin, tmax){
-  const c = document.getElementById('chart'); if(!c || temps.length<2) return;
-  const ctx = c.getContext('2d'); c.width = c.clientWidth; c.height = 220;
-  ctx.clearRect(0,0,c.width,c.height);
-  const lo = tmin-3, hi = tmax+3;
-  function y(v){ return c.height - ((v-lo)/(hi-lo))*c.height; }
-  ctx.strokeStyle = '#334'; ctx.beginPath(); ctx.moveTo(0,y(tmax)); ctx.lineTo(c.width,y(tmax)); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(0,y(tmin)); ctx.lineTo(c.width,y(tmin)); ctx.stroke();
-  ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 2; ctx.beginPath();
-  temps.forEach((t,i)=>{ const x=(i/(temps.length-1))*c.width; const yy=y(t); i===0?ctx.moveTo(x,yy):ctx.lineTo(x,yy); });
-  ctx.stroke();
-}
-
-async function ackIncident(){
-  await fetch('/api/ack/'+selectedDevice, { method:'POST' });
-  alert('Incident acknowledged.');
-  refreshAll();
-}
-function downloadAudit(){ window.location.href = '/api/audit/'+selectedDevice; }
-function downloadExport(){ window.open('/api/export/'+selectedDevice, '_blank'); }
-
-async function saveConfig(){
-  const max = parseFloat(document.getElementById('cfgMax').value);
-  const min = parseFloat(document.getElementById('cfgMin').value);
-  const profile = document.getElementById('cfgProfile').value;
-  const r = await fetch('/api/config/'+selectedDevice, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({max,min,profile}) });
-  const j = await r.json();
-  document.getElementById('cfgMsg').innerText = r.ok ? 'Saved. Device will pick this up within ~20s.' : ('Rejected: '+j.error);
-}
-
-async function runWhatIf(){
-  const current = document.getElementById('wiCurrent').value;
-  const rate = document.getElementById('wiRate').value;
-  const threshold = document.getElementById('wiThreshold').value;
-  const r = await fetch('/api/whatif?current='+current+'&rate='+rate+'&threshold='+threshold);
-  const j = await r.json();
-  document.getElementById('wiResult').innerText = j.note;
-}
-
-async function runDiagnostics(){
-  const r = await fetch('/api/diagnostics');
-  const j = await r.json();
-  document.getElementById('diagResult').innerText = 'Server OK — '+j.devicesTracked+' device(s) tracked, '+j.memoryMB+'MB used, uptime '+j.uptimeSec+'s.';
-}
-
-/* ---------------- Voice: two-way (listens AND speaks), on-demand only ---------------- */
-let recognizing = false;
-let recognizer = null;
-function speak(text){
-  if(!('speechSynthesis' in window)) return;
-  speechSynthesis.cancel();
-  speechSynthesis.speak(new SpeechSynthesisUtterance(text));
-}
-function logVoice(who, text){
-  const el = document.getElementById('voiceTranscript');
-  if(el.innerText.trim()==='No conversation yet') el.innerHTML='';
-  el.innerHTML += '<div><b>'+who+':</b> '+text+'</div>';
-  el.scrollTop = el.scrollHeight;
-}
-async function handleVoiceCommand(text){
-  logVoice('You', text);
-  const t = text.toLowerCase();
-  let reply = "I didn't understand that. Try: what is the temperature, is it safe, any alerts, acknowledge incident, or run diagnostics.";
-  if(!latestData){ speak('No device data yet.'); logVoice('Guardian','No device data yet.'); return; }
-  if(t.includes('temperature')){
-    reply = 'Current temperature is '+latestData.temp+' degrees Celsius.';
-  } else if(t.includes('safe')){
-    reply = latestData.state==='SAFE' ? 'Yes, the system is currently safe.' : 'No. Current state is '+latestData.state+'. '+latestData.stateReason;
-  } else if(t.includes('risk')){
-    reply = 'Current risk score is '+latestData.risk+' percent.';
-  } else if(t.includes('alert')){
-    reply = latestData.state==='DANGER' ? 'Yes, there is an active critical alert. Incident '+latestData.incidentId : 'No active critical alerts.';
-  } else if(t.includes('online')){
-    reply = latestData.cloudReachable ? 'The device is online and reporting to the cloud.' : 'The device appears to be offline from the cloud.';
-  } else if(t.includes('acknowledge')){
-    await fetch('/api/ack/'+selectedDevice, { method:'POST' });
-    reply = 'Incident acknowledged.';
-  } else if(t.includes('diagnostic')){
-    const r = await fetch('/api/diagnostics'); const j = await r.json();
-    reply = 'Diagnostics complete. Server is healthy, tracking '+j.devicesTracked+' devices.';
-  } else if(t.includes('rising') || t.includes('trend')){
-    reply = 'Trend is '+latestData.trend+' at '+latestData.rateOfChange+' degrees per minute.';
+  async function fetchJSON(url) {
+    try {
+      const r = await fetch(url);
+      return await r.json();
+    } catch(e) { return null; }
   }
-  speak(reply);
-  logVoice('Guardian', reply);
-}
-function toggleListen(){
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if(!SR){ alert('Speech recognition not supported in this browser. Try Chrome.'); return; }
-  if(recognizing){ recognizer.stop(); return; }
-  recognizer = new SR();
-  recognizer.lang = 'en-US'; recognizer.continuous = false; recognizer.interimResults = false;
-  recognizer.onstart = ()=>{ recognizing = true; document.getElementById('micBtn').classList.add('listening'); };
-  recognizer.onend = ()=>{ recognizing = false; document.getElementById('micBtn').classList.remove('listening'); };
-  recognizer.onresult = (e)=>{ const text = e.results[0][0].transcript; handleVoiceCommand(text); };
-  recognizer.start();
-}
 
-loadFleet().then(refreshAll);
-setInterval(loadFleet, 8000);
-setInterval(refreshAll, 3000);
+  function updateUI(data) {
+    if (!data) return;
+    currentDevice = data.deviceId;
+
+    // Overview
+    document.getElementById('ovTemp').textContent = (data.temperature ?? '--') + '°C';
+    document.getElementById('ovHum').textContent = 'Humidity: ' + (data.humidity ?? '--') + '%';
+    const st = data.state || '--';
+    document.getElementById('ovState').textContent = st;
+    document.getElementById('ovState').className = 'big state-' + st;
+    document.getElementById('ovRisk').textContent = (data.risk ?? '--') + '%';
+    document.getElementById('ovDevice').textContent = data.deviceId || '--';
+    document.getElementById('ovTrend').textContent = data.trend || '--';
+    document.getElementById('ovVib').textContent = data.vibrationCount ?? '--';
+    document.getElementById('ovConf').textContent = (data.confidence ?? '--') + '%';
+    document.getElementById('ovLast').textContent = data.receivedAt ? new Date(data.receivedAt).toLocaleTimeString() : '--';
+    document.getElementById('ovAdvisory').textContent = data.advisory || 'No advisory';
+    document.getElementById('ovCorr').textContent = data.correlation || '';
+
+    // Twin
+    document.getElementById('twinTemp').textContent = (data.temperature ?? '--') + '°C';
+    document.getElementById('twinState').textContent = st;
+    const box = document.getElementById('visualBox');
+    box.className = 'box';
+    if (st === 'SAFE') box.classList.add('safe');
+    else if (st === 'WARNING') box.classList.add('warn');
+    else if (st === 'BREACH' || st === 'SENSOR_FAULT') box.classList.add('danger');
+
+    // Live
+    document.getElementById('liveTemp').textContent = (data.temperature ?? '--') + '°C';
+    document.getElementById('liveHum').textContent = (data.humidity ?? '--') + '%';
+    document.getElementById('liveVib').textContent = data.vibrationCount ?? '--';
+    document.getElementById('liveRssi').textContent = (data.rssi ?? '--') + ' dBm';
+
+    // Health
+    document.getElementById('hOnline').textContent = (Date.now() - data.serverTs < 30000) ? 'ONLINE' : 'STALE / OFFLINE';
+    document.getElementById('hLast').textContent = data.receivedAt ? new Date(data.receivedAt).toLocaleString() : '--';
+    document.getElementById('hConf').textContent = (data.confidence ?? '--') + '%';
+    document.getElementById('hFault').textContent = data.sensorFault || 'None';
+    document.getElementById('hRecon').textContent = data.reconnects ?? 0;
+  }
+
+  async function refresh() {
+    const devices = await fetchJSON('/api/devices');
+    if (devices && devices.length) {
+      document.getElementById('deviceCount').textContent = devices.length + ' device(s)';
+      const latest = await fetchJSON('/api/latest?deviceId=' + devices[0].deviceId);
+      updateUI(latest);
+    }
+
+    const stats = await fetchJSON('/api/stats');
+    if (stats) {
+      document.getElementById('ovComp').textContent = stats.compliance + '%';
+      document.getElementById('anMin').textContent = stats.minTemp;
+      document.getElementById('anMax').textContent = stats.maxTemp;
+      document.getElementById('anAvg').textContent = stats.avgTemp;
+      document.getElementById('anCount').textContent = stats.totalReadings;
+      document.getElementById('anInc').textContent = stats.openIncidents;
+    }
+
+    const pred = await fetchJSON('/api/prediction');
+    if (pred && pred.available) {
+      document.getElementById('predRate').textContent = (pred.rateCperMin || 0).toFixed(2);
+      document.getElementById('predTrend').textContent = pred.trend || '--';
+      if (pred.estimatedSecondsToThreshold) {
+        const m = Math.floor(pred.estimatedSecondsToThreshold / 60);
+        const s = pred.estimatedSecondsToThreshold % 60;
+        document.getElementById('predEta').textContent = \`Estimated time to threshold: ~\${m}m \${s}s (estimate only)\`;
+      } else {
+        document.getElementById('predEta').textContent = 'No imminent threshold crossing predicted';
+      }
+    }
+
+    const alerts = await fetchJSON('/api/alerts');
+    if (alerts) {
+      document.getElementById('alertList').innerHTML = alerts.length ? alerts.slice(0,10).map(a =>
+        \`<div style="padding:6px 0;border-bottom:1px solid #1e2a44;">\${a.ts.slice(11,19)} | \${a.deviceId} | \${a.message}</div>\`
+      ).join('') : 'No alerts yet';
+    }
+
+    const incs = await fetchJSON('/api/incidents');
+    if (incs) {
+      document.getElementById('incidentList').innerHTML = incs.length ? incs.slice(0,8).map(i =>
+        \`<div style="padding:8px 0;border-bottom:1px solid #1e2a44;">
+          <strong>\${i.id}</strong> – \${i.status} – Peak \${i.peakTemp}°C
+          \${i.status==='OPEN' && !i.acknowledged ? \`<button class="btn" style="margin-left:8px;padding:2px 8px;font-size:0.75rem;" onclick="ackIncident('\${i.id}')">ACK</button>\` : ''}
+        </div>\`
+      ).join('') : 'No incidents';
+    }
+
+    const audit = await fetchJSON('/api/audit');
+    if (audit) {
+      document.getElementById('auditList').innerHTML = audit.slice(0,30).map(a =>
+        \`<div>\${a.ts.slice(11,19)} – \${a.event} \${a.details || ''}</div>\`
+      ).join('');
+    }
+
+    const cloud = await fetchJSON('/api/cloud-status');
+    if (cloud) {
+      document.getElementById('hUptime').textContent = Math.floor(cloud.uptime);
+      document.getElementById('hDevices').textContent = cloud.devices;
+    }
+  }
+
+  async function ackIncident(id) {
+    await fetch('/api/incidents/' + id + '/ack', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({by: 'Dashboard User'})
+    });
+    refresh();
+  }
+
+  function runWhatIf() {
+    const rate = parseFloat(document.getElementById('whatRate').value) || 0.2;
+    const tempEl = document.getElementById('ovTemp').textContent;
+    const temp = parseFloat(tempEl) || 5;
+    if (rate <= 0) {
+      document.getElementById('whatResult').textContent = 'Rate must be positive for rising simulation';
+      return;
+    }
+    const sec = ((8 - temp) / rate) * 60;
+    if (sec <= 0) {
+      document.getElementById('whatResult').textContent = 'Already at or above 8°C';
+    } else {
+      const m = Math.floor(sec / 60);
+      const s = Math.round(sec % 60);
+      document.getElementById('whatResult').textContent = \`At +\${rate}°C/min, 8°C estimated in ~\${m} min \${s} sec (simulation only)\`;
+    }
+  }
+
+  // Simple demo simulation (cloud side only)
+  function simulate(state, temp) {
+    const fake = {
+      deviceId: currentDevice || 'DEMO-01',
+      temperature: temp,
+      humidity: 55,
+      vibrationCount: state === 'BREACH' ? 15 : 2,
+      state: state,
+      risk: state === 'BREACH' ? 92 : state === 'WARNING' ? 45 : 12,
+      trend: state === 'BREACH' ? 'RISING' : 'STABLE',
+      confidence: 98,
+      advisory: state === 'BREACH' ? 'Critical – inspect immediately' : 'Demo mode',
+      correlation: 'Demo correlation',
+      receivedAt: new Date().toISOString(),
+      serverTs: Date.now()
+    };
+    // Push to our own ingest (no API key needed for demo from same origin in this simple version)
+    fetch('/api/ingest', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': '${API_KEY}'
+      },
+      body: JSON.stringify(fake)
+    }).then(() => refresh());
+  }
+
+  // Voice Assistant
+  const voiceBtn = document.getElementById('voiceBtn');
+  voiceBtn.addEventListener('click', () => {
+    if (!('speechSynthesis' in window)) {
+      alert('Speech not supported in this browser');
+      return;
+    }
+    voiceEnabled = !voiceEnabled;
+    voiceBtn.style.background = voiceEnabled ? '#22c55e' : '#a855f7';
+    if (voiceEnabled) {
+      const u = new SpeechSynthesisUtterance('Voice assistant enabled. Ask me about temperature, risk or alerts.');
+      speechSynthesis.speak(u);
+    }
+  });
+
+  // Simple voice commands via recognition (if available)
+  if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+    const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const rec = new Rec();
+    rec.continuous = false;
+    rec.interimResults = false;
+    rec.onresult = (e) => {
+      const text = e.results[0][0].transcript.toLowerCase();
+      let reply = 'I did not understand.';
+      if (text.includes('temperature')) reply = 'Current temperature is ' + document.getElementById('ovTemp').textContent;
+      else if (text.includes('safe') || text.includes('status')) reply = 'System state is ' + document.getElementById('ovState').textContent;
+      else if (text.includes('risk')) reply = 'Risk score is ' + document.getElementById('ovRisk').textContent;
+      else if (text.includes('alert')) reply = 'Check the alerts tab for recent events.';
+      const u = new SpeechSynthesisUtterance(reply);
+      speechSynthesis.speak(u);
+    };
+    voiceBtn.addEventListener('dblclick', () => {
+      if (voiceEnabled) rec.start();
+    });
+  }
+
+  // Start
+  refresh();
+  setInterval(refresh, 4000);
 </script>
 </body>
-</html>`;
-
-app.use((req, res) => res.status(404).json({ error: "Not found" }));
-app.use((err, req, res, next) => {
-  console.error(err);
-  res.status(500).json({ error: "Internal server error" }); // never leak stack traces to clients
+</html>`);
 });
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`ColdChain Guardian cloud server listening on port ${PORT}`);
+// Start server
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(\`VAXGUARD PRO Cloud running on port \${PORT}\`);
+  console.log(\`API Key required for /api/ingest: \${API_KEY}\`);
+  addAudit('SERVER_START', 'VAXGUARD PRO started');
 });
