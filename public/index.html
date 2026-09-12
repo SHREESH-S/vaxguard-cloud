@@ -2,162 +2,261 @@
 <html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>VaxGuard</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
-body{background:#070D18;color:#E7EDF6;font-family:sans-serif;padding:16px;max-width:680px;margin:auto}
+body{background:#070D18;color:#E7EDF6;font-family:sans-serif;padding:14px;max-width:700px;margin:auto}
 h2{background:linear-gradient(90deg,#4BA3E8,#34C77B);-webkit-background-clip:text;background-clip:text;color:transparent;margin-bottom:2px}
-.card{background:#101B2E;border:1px solid #223350;border-radius:10px;padding:16px;margin-bottom:12px}
-.big{font-size:32px;font-weight:bold}
+.card{background:#101B2E;border:1px solid #223350;border-radius:10px;padding:14px;margin-bottom:12px}
+.big{font-size:30px;font-weight:bold}
 .SAFE{color:#34C77B}.WATCH{color:#E8B84B}.WARNING{color:#E8862E}.CRITICAL{color:#E5484D}.SENSOR_FAULT{color:#9B7BE0}.RECOVERY{color:#4BA3E8}
-button{background:#234164;color:#fff;border:1px solid #2E4E75;padding:10px 14px;border-radius:8px;cursor:pointer;margin:4px 4px 4px 0;font-size:14px}
-button.demo-normal.active{background:#1F7A46}
-button.demo-warn.active{background:#B8860B}
-button.demo-high.active,button.demo-low.active{background:#B8332D}
-button.demo-off.active{background:#3A4A63}
+button{background:#234164;color:#fff;border:1px solid #2E4E75;padding:9px 12px;border-radius:8px;cursor:pointer;margin:3px 3px 3px 0;font-size:13px}
+button.active{background:#2E7D53;border-color:#3BA36C}
+button.listening{background:#C0392B;animation:pulse 1.2s infinite}
+@keyframes pulse{0%{opacity:1}50%{opacity:.5}100%{opacity:1}}
+input,select{width:100%;padding:8px;margin:4px 0;background:#16233A;border:1px solid #223350;color:#fff;border-radius:6px;box-sizing:border-box}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
+.tab{background:#16233A;border:1px solid #223350;padding:7px 11px;border-radius:8px;cursor:pointer;font-size:12px}
+.tab.active{background:#234164;border-color:#4BA3E8}
+.screen{display:none} .screen.active{display:block}
 .row{display:flex;justify-content:space-between;font-size:13px;padding:5px 0;border-bottom:1px solid #182338}
 small{color:#8CA0BE}
-.pill{display:inline-block;padding:2px 10px;border-radius:12px;font-size:12px;font-weight:bold;margin-left:6px}
-.pill.demo{background:#3A2E14;color:#E8B84B}
-.pill.real{background:#123322;color:#34C77B}
+.pill{display:inline-block;padding:2px 10px;border-radius:12px;font-size:11px;font-weight:bold;margin-left:6px}
+.pill.demo{background:#3A2E14;color:#E8B84B} .pill.real{background:#123322;color:#34C77B}
+ul{padding-left:18px;font-size:13px;line-height:1.6}
+#voiceLog{max-height:160px;overflow-y:auto;font-size:13px;margin-top:8px}
 </style></head>
 <body>
 <h2>🛡️ VaxGuard</h2>
 <small>AI-assisted vaccine cold-chain monitor <span id="modePill" class="pill real">REAL</span></small>
 
-<div class="card">
-  <div>Temperature</div><div class="big" id="temp">--°C</div>
-  <div>State</div><div class="big" id="state">--</div>
-  <div class="row"><span>Humidity</span><span id="hum">--%</span></div>
-  <div class="row"><span>Vibration (10s window)</span><span id="vib">--</span></div>
-  <div class="row"><span>Last update</span><span id="lastUpdate">--</span></div>
+<div class="tabs">
+  <div class="tab active" data-s="dash">Dashboard</div>
+  <div class="tab" data-s="history">History</div>
+  <div class="tab" data-s="alerts">Alerts</div>
+  <div class="tab" data-s="insights">AI Insights</div>
+  <div class="tab" data-s="voice">Voice</div>
+  <div class="tab" data-s="demo">Demo Lab</div>
+  <div class="tab" data-s="audit">Audit</div>
+  <div class="tab" data-s="settings">Settings</div>
 </div>
 
-<div class="card">
-  <div style="margin-bottom:8px"><b>Demo Mode</b> — instant, controls the ESP32 LEDs live</div>
-  <button class="demo-normal" onclick="setDemo('NORMAL')">🟢 Normal</button>
-  <button class="demo-warn" onclick="setDemo('WARN')">🟡 Warning (yellow blink)</button>
-  <button class="demo-high" onclick="setDemo('HIGH')">🔴 High (red blink)</button>
-  <button class="demo-low" onclick="setDemo('LOW')">🔴 Low (red blink)</button>
-  <button class="demo-off" onclick="setDemo('OFF')">⏹ Off (real sensors)</button>
+<div class="screen active" id="dash">
+  <div class="card"><div>Temperature</div><div class="big" id="temp">--°C</div>
+    <div>State</div><div class="big" id="state">--</div>
+    <div class="row"><span>Humidity</span><span id="hum">--%</span></div>
+    <div class="row"><span>Vibration (10s)</span><span id="vib">--</span></div>
+    <div class="row"><span>Last update</span><span id="lastUpdate">--</span></div></div>
+  <div class="card"><div>AI Summary</div><div id="quickSummary" style="font-size:14px;margin-top:6px">Loading…</div></div>
 </div>
 
-<div class="card">
-  <div>AI Insight</div>
-  <div id="insightText" style="font-size:14px;line-height:1.5;margin-top:6px">Loading…</div>
+<div class="screen" id="history">
+  <div class="card"><select id="rangeSelect" onchange="loadHistory()">
+    <option value="1h" selected>Last 1h</option><option value="6h">Last 6h</option><option value="24h">Last 24h</option><option value="7d">Last 7d</option>
+  </select><canvas id="chart" height="170"></canvas></div>
 </div>
 
-<div class="card">
-  <div>Temperature History</div>
-  <canvas id="chart" height="160"></canvas>
+<div class="screen" id="alerts"><div class="card" id="alertsList">Loading…</div></div>
+
+<div class="screen" id="insights">
+  <div class="card"><div>Trend & Prediction</div><div id="insTrend">Loading…</div></div>
+  <div class="card"><div>Cold-Chain Quality</div><div id="insQuality">Loading…</div><small id="insQualityNote"></small></div>
+  <div class="card"><div>Sensor & Device Health</div><div id="insHealth">Loading…</div></div>
+  <div class="card"><div>Advice</div><ul id="insAdvice"></ul></div>
+  <div class="card"><div>Patterns</div><div id="insPatterns">Loading…</div></div>
+  <div class="card"><div>System Grade</div><div id="insGrade">Loading…</div></div>
 </div>
 
-<div class="card">
-  <div>Recent Alerts</div>
-  <div id="alertsList" style="margin-top:6px">Loading…</div>
+<div class="screen" id="voice">
+  <div class="card">
+    <button id="voiceBtn" onclick="toggleVoice()">🎙 Ask VaxGuard</button>
+    <button onclick="stopVoice()">⏹ Stop</button>
+    <button id="voiceAlertBtn" onclick="toggleVoiceAlerts()">🔊 Voice Alerts: OFF</button>
+    <div id="voiceLog"></div>
+    <small>Try: "what's the temperature", "am I safe", "what's the risk", "why", "vibration"</small>
+  </div>
 </div>
 
-<div class="card">
-  <div>Thresholds</div>
-  <input id="cfgLower" placeholder="Lower °C" style="width:45%;padding:6px;margin-right:6px;background:#16233A;border:1px solid #223350;color:#fff;border-radius:6px">
-  <input id="cfgUpper" placeholder="Upper °C" style="width:45%;padding:6px;background:#16233A;border:1px solid #223350;color:#fff;border-radius:6px">
-  <button onclick="saveConfig()" style="margin-top:8px">Save</button>
-  <div id="cfgStatus" style="font-size:12px;margin-top:6px"></div>
+<div class="screen" id="demo">
+  <div class="card">
+    <div style="margin-bottom:8px"><b>Demo Mode</b> — instant, controls the ESP32 LEDs live over Wi-Fi</div>
+    <button class="demo-btn" data-l="NORMAL" onclick="setDemo('NORMAL')">🟢 Normal</button>
+    <button class="demo-btn" data-l="WARN" onclick="setDemo('WARN')">🟡 Warning</button>
+    <button class="demo-btn" data-l="HIGH" onclick="setDemo('HIGH')">🔴 High</button>
+    <button class="demo-btn" data-l="LOW" onclick="setDemo('LOW')">🔴 Low</button>
+    <button class="demo-btn" data-l="VIBRATION" onclick="setDemo('VIBRATION')">📳 Vibration burst</button>
+    <button class="demo-btn" data-l="FAULT" onclick="setDemo('FAULT')">⚠️ Sensor fault</button>
+    <button class="demo-btn" data-l="OFF" onclick="setDemo('OFF')">⏹ Off (real sensors)</button>
+  </div>
+</div>
+
+<div class="screen" id="audit">
+  <div class="card"><input id="auditPin" type="password" placeholder="Admin PIN"><button onclick="loadAudit()">View Audit Log</button>
+  <button onclick="verifyAudit()">Verify Chain Integrity</button><div id="auditVerify" style="margin-top:6px"></div></div>
+  <div class="card" id="auditList">Enter PIN to view.</div>
+</div>
+
+<div class="screen" id="settings">
+  <div class="card">
+    <div>Thresholds</div>
+    <input id="cfgLower" placeholder="Lower °C"><input id="cfgUpper" placeholder="Upper °C">
+    <input id="cfgPin" type="password" placeholder="Admin PIN">
+    <button onclick="saveConfig()">Save</button>
+    <div id="cfgStatus" style="font-size:12px;margin-top:6px"></div>
+  </div>
+  <div class="card"><div>Location</div><div id="locBox">Loading…</div></div>
 </div>
 
 <script>
-let chart = null;
+let chart=null, recognizing=false, conversationTurns=0, voiceAlertsOn=false, lastSeenEventId=null;
 
-async function refreshLatest() {
-  try {
-    const r = await fetch('/api/sensors/latest?deviceId=VAX-001');
-    const d = await r.json();
-    if (d) {
-      document.getElementById('temp').textContent = (d.temperature != null ? d.temperature.toFixed(1) : '--') + '°C';
-      document.getElementById('hum').textContent = (d.humidity != null && d.humidity >= 0 ? d.humidity.toFixed(0) : '--') + '%';
-      document.getElementById('vib').textContent = d.vibrationCount || 0;
+document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+  document.querySelectorAll('.screen').forEach(x=>x.classList.remove('active'));
+  t.classList.add('active'); document.getElementById(t.dataset.s).classList.add('active');
+  if (t.dataset.s==='history') loadHistory();
+  if (t.dataset.s==='alerts') loadAlerts();
+  if (t.dataset.s==='insights') loadInsightsScreen();
+  if (t.dataset.s==='demo') refreshDemoButtons();
+  if (t.dataset.s==='settings') { loadConfigForm(); loadLocation(); }
+});
+
+async function refreshLatest(){
+  try{
+    const r = await fetch('/api/sensors/latest?deviceId=VAX-001'); const d = await r.json();
+    if (d){
+      document.getElementById('temp').textContent = (d.temperature!=null?d.temperature.toFixed(1):'--')+'°C';
+      document.getElementById('hum').textContent = (d.humidity!=null&&d.humidity>=0?d.humidity.toFixed(0):'--')+'%';
+      document.getElementById('vib').textContent = d.vibrationCount||0;
       document.getElementById('state').textContent = d.state;
-      document.getElementById('state').className = 'big ' + d.state;
+      document.getElementById('state').className = 'big '+d.state;
       document.getElementById('lastUpdate').textContent = new Date(d.receivedAt).toLocaleTimeString();
       const pill = document.getElementById('modePill');
-      pill.textContent = d.simulated ? 'DEMO' : 'REAL';
-      pill.className = 'pill ' + (d.simulated ? 'demo' : 'real');
+      pill.textContent = d.simulated?'DEMO':'REAL'; pill.className = 'pill '+(d.simulated?'demo':'real');
     }
-  } catch (e) {}
+  }catch(e){}
+}
+async function loadQuickSummary(){
+  try{ const r=await fetch('/api/ai/insights?deviceId=VAX-001'); const d=await r.json();
+    document.getElementById('quickSummary').textContent = d.message || d.summary; }catch(e){}
+}
+refreshLatest(); loadQuickSummary();
+setInterval(refreshLatest, 1500);
+setInterval(loadQuickSummary, 6000);
+
+async function pollForVoiceAlerts(){
+  if (!voiceAlertsOn) return;
+  try{ const r=await fetch('/api/events'); const events=await r.json(); if(!events.length) return;
+    const newest=events[0];
+    if (lastSeenEventId===null){ lastSeenEventId=newest.id; return; }
+    if (newest.id!==lastSeenEventId && ['WARNING','CRITICAL','SENSOR_FAULT'].includes(newest.severity)){
+      lastSeenEventId=newest.id; speak(`Alert. ${newest.reason}.`);
+    } else lastSeenEventId=newest.id;
+  }catch(e){}
+}
+setInterval(pollForVoiceAlerts, 4000);
+function toggleVoiceAlerts(){
+  voiceAlertsOn=!voiceAlertsOn;
+  document.getElementById('voiceAlertBtn').textContent='🔊 Voice Alerts: '+(voiceAlertsOn?'ON':'OFF');
+  document.getElementById('voiceAlertBtn').classList.toggle('active', voiceAlertsOn);
+  if (voiceAlertsOn) speak('Voice alerts are now on.');
 }
 
-async function refreshDemoButtons() {
-  try {
-    const r = await fetch('/api/demo');
-    const d = await r.json();
-    document.querySelectorAll('[class^=demo-],[class*=" demo-"]').forEach(b => b.classList.remove('active'));
-    const map = { NORMAL: '.demo-normal', WARN: '.demo-warn', HIGH: '.demo-high', LOW: '.demo-low', OFF: '.demo-off' };
-    const sel = document.querySelector(map[d.active ? d.level : 'OFF']);
-    if (sel) sel.classList.add('active');
-  } catch (e) {}
+async function loadHistory(){
+  const range = document.getElementById('rangeSelect').value;
+  const r = await fetch(`/api/history?range=${range}&deviceId=VAX-001`); const d = await r.json();
+  const labels = d.series.map(p=>new Date(p.t).toLocaleTimeString());
+  const temps = d.series.map(p=>p.temperature);
+  if (chart) chart.destroy();
+  chart = new Chart(document.getElementById('chart'), { type:'line',
+    data:{ labels, datasets:[{ label:'Temperature °C', data:temps, borderColor:'#4BA3E8', tension:0.2, pointRadius:0 }] },
+    options:{ animation:false, scales:{ x:{ ticks:{ color:'#8CA0BE', maxTicksLimit:6 } }, y:{ ticks:{ color:'#8CA0BE' } } }, plugins:{ legend:{ labels:{ color:'#E7EDF6' } } } } });
 }
-
-async function setDemo(level) {
-  await fetch('/api/demo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level }) });
+async function loadAlerts(){
+  const r = await fetch('/api/alerts'); const d = await r.json();
+  document.getElementById('alertsList').innerHTML = d.length ? d.map(e=>
+    `<div class="row"><span class="${e.severity}">${e.severity}${e.simulated?' (demo)':''}</span><span>${e.reason}</span><small>${new Date(e.timestamp).toLocaleTimeString()}</small></div>`
+  ).join('') : 'No alerts yet.';
+}
+async function loadInsightsScreen(){
+  const r = await fetch('/api/ai/insights?deviceId=VAX-001'); const d = await r.json();
+  if (d.message){ document.getElementById('insTrend').textContent = d.message; return; }
+  document.getElementById('insTrend').innerHTML = `Direction: <b>${d.trend.direction}</b><br>${d.eta.message}${d.anomaly.isAnomaly?'<br>⚠️ Unusual reading (z='+d.anomaly.zScore+')':''}<br>Forecast (5 min): ${d.forecast5Min.forecastTemp}°C`;
+  document.getElementById('insQuality').innerHTML = `Score: <b>${d.coldChainQuality.score}/100</b> — ${d.coldChainQuality.label}<br>Excursion minutes (7d): ${d.coldChainQuality.rawExcursionMinutes7d}`;
+  document.getElementById('insQualityNote').textContent = d.coldChainQuality.disclaimer;
+  document.getElementById('insHealth').innerHTML = `Sensor health: <b>${d.sensorHealth.score}/100</b> (faults 7d: ${d.sensorHealth.faultsLast7d})<br>Device health composite: <b>${d.deviceHealth.score}/100</b><br>Reliability: ${d.reliability.score}/100<br>Data completeness: ${d.dataCompleteness.pct}%`;
+  document.getElementById('insAdvice').innerHTML = d.advice.map(a=>`<li>${a}</li>`).join('');
+  let patterns=[];
+  if (d.drift.available) patterns.push(`Sensor drift: ${d.drift.driftSuspected?'⚠️ suspected':'none'} (${d.drift.driftPerDay}°C/day)`);
+  if (d.weekOverWeek.available) patterns.push(`vs last week: ${d.weekOverWeek.changePct>0?'+':''}${d.weekOverWeek.changePct}%`);
+  if (d.vibrationCorrelation.likelyDoorOpenEvents) patterns.push(`Likely door-open events: ${d.vibrationCorrelation.likelyDoorOpenEvents}`);
+  if (d.humidityStability.available) patterns.push(`Humidity: ${d.humidityStability.meanHumidity}% avg`);
+  patterns.push(`Root cause: ${d.rootCause}`);
+  document.getElementById('insPatterns').innerHTML = patterns.join('<br>');
+  document.getElementById('insGrade').innerHTML = `<b>${d.systemGrade.grade}</b> (${d.systemGrade.score}/100)`;
+}
+async function refreshDemoButtons(){
+  try{ const r = await fetch('/api/demo'); const d = await r.json();
+    document.querySelectorAll('.demo-btn').forEach(b=>b.classList.toggle('active', d.active ? b.dataset.l===d.level : b.dataset.l==='OFF'));
+  }catch(e){}
+}
+async function setDemo(level){
+  await fetch('/api/demo', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ level }) });
   refreshDemoButtons();
 }
+refreshDemoButtons();
 
-async function loadInsight() {
-  try {
-    const r = await fetch('/api/ai/insights?deviceId=VAX-001');
-    const d = await r.json();
-    if (d.message) { document.getElementById('insightText').textContent = d.message; return; }
-    document.getElementById('insightText').innerHTML =
-      `Mode: <b>${d.mode}</b> · Trend: <b>${d.trend.direction}</b> · Risk score: <b>${d.riskScore}/100</b><br>` +
-      `Cold-chain quality (estimate): <b>${d.coldChainQuality.score}/100 — ${d.coldChainQuality.label}</b><br>` +
-      `<small>${d.coldChainQuality.disclaimer}</small>`;
-  } catch (e) {}
-}
-
-async function loadChart() {
-  try {
-    const r = await fetch('/api/history?range=1h&deviceId=VAX-001');
-    const d = await r.json();
-    const labels = d.series.map(p => new Date(p.t).toLocaleTimeString());
-    const temps = d.series.map(p => p.temperature);
-    if (chart) chart.destroy();
-    chart = new Chart(document.getElementById('chart'), {
-      type: 'line',
-      data: { labels, datasets: [{ label: 'Temperature °C', data: temps, borderColor: '#4BA3E8', tension: 0.2, pointRadius: 0 }] },
-      options: { animation: false, scales: { x: { ticks: { color: '#8CA0BE', maxTicksLimit: 6 } }, y: { ticks: { color: '#8CA0BE' } } }, plugins: { legend: { labels: { color: '#E7EDF6' } } } }
-    });
-  } catch (e) {}
-}
-
-async function loadAlerts() {
-  try {
-    const r = await fetch('/api/alerts');
-    const d = await r.json();
-    document.getElementById('alertsList').innerHTML = d.length ? d.map(e =>
-      `<div class="row"><span class="${e.severity}">${e.severity}${e.simulated ? ' (demo)' : ''}</span><span>${e.reason}</span><small>${new Date(e.timestamp).toLocaleTimeString()}</small></div>`
-    ).join('') : 'No alerts yet.';
-  } catch (e) {}
-}
-
-async function saveConfig() {
-  const lower = parseFloat(document.getElementById('cfgLower').value);
-  const upper = parseFloat(document.getElementById('cfgUpper').value);
-  if (isNaN(lower) || isNaN(upper)) { document.getElementById('cfgStatus').textContent = 'Enter valid numbers.'; return; }
-  const r = await fetch('/api/config', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tempLower: lower, tempUpper: upper }) });
+async function loadAudit(){
+  const pin = document.getElementById('auditPin').value;
+  const r = await fetch('/api/audit?pin='+encodeURIComponent(pin));
+  if (r.status===403){ document.getElementById('auditList').textContent='Invalid PIN.'; return; }
   const d = await r.json();
-  document.getElementById('cfgStatus').textContent = d.ok ? 'Saved (v' + d.config.configVersion + ')' : 'Save failed';
+  document.getElementById('auditList').innerHTML = d.map(e=>`<div class="row"><span>${e.action}</span><span>${e.actor||'-'}</span><small>${new Date(e.timestamp).toLocaleTimeString()}</small></div>`).join('');
+}
+async function verifyAudit(){
+  const pin = document.getElementById('auditPin').value;
+  const r = await fetch('/api/audit/verify?pin='+encodeURIComponent(pin));
+  if (r.status===403){ document.getElementById('auditVerify').textContent='Invalid PIN.'; return; }
+  const d = await r.json();
+  document.getElementById('auditVerify').innerHTML = d.tampered ? `⚠️ TAMPERED at ${d.brokenAt}` : `✅ Intact, ${d.entriesChecked} entries verified`;
 }
 
-async function loadConfigIntoForm() {
+async function loadConfigForm(){
   const cfg = await (await fetch('/api/config')).json();
   document.getElementById('cfgLower').value = cfg.tempLower;
   document.getElementById('cfgUpper').value = cfg.tempUpper;
 }
+async function saveConfig(){
+  const lower = parseFloat(document.getElementById('cfgLower').value);
+  const upper = parseFloat(document.getElementById('cfgUpper').value);
+  const pin = document.getElementById('cfgPin').value;
+  const r = await fetch('/api/config', { method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ tempLower:lower, tempUpper:upper, pin }) });
+  if (r.status===403){ document.getElementById('cfgStatus').textContent='Invalid PIN.'; return; }
+  const d = await r.json();
+  document.getElementById('cfgStatus').textContent = d.ok ? 'Saved (v'+d.config.configVersion+')' : 'Save failed';
+}
+async function loadLocation(){
+  const r = await fetch('/api/location'); const d = await r.json();
+  document.getElementById('locBox').textContent = d.label ? `${d.label} (source: ${d.source})` : 'Not detected yet.';
+}
 
-// live loop — fast polling for near real-time feel
-refreshLatest(); refreshDemoButtons(); loadInsight(); loadChart(); loadAlerts(); loadConfigIntoForm();
-setInterval(refreshLatest, 1500);
-setInterval(refreshDemoButtons, 2000);
-setInterval(loadInsight, 5000);
-setInterval(loadChart, 8000);
-setInterval(loadAlerts, 8000);
+function log(who,text){ document.getElementById('voiceLog').innerHTML = '<div><b>'+who+':</b> '+text+'</div>'+document.getElementById('voiceLog').innerHTML; }
+function speak(t,onEnd){ if(!('speechSynthesis' in window)){ if(onEnd) onEnd(); return; } const u=new SpeechSynthesisUtterance(t); if(onEnd) u.onend=onEnd; speechSynthesis.speak(u); }
+let recInstance=null;
+function toggleVoice(){ recognizing?stopVoice():startVoiceTurn(); }
+function stopVoice(){ recognizing=false; conversationTurns=0; if(recInstance) recInstance.abort(); document.getElementById('voiceBtn').classList.remove('listening'); }
+function startVoiceTurn(){
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR){ log('VaxGuard','Voice recognition not supported — try Chrome.'); return; }
+  recognizing=true; document.getElementById('voiceBtn').classList.add('listening');
+  recInstance = new SR(); recInstance.lang='en-US';
+  recInstance.onresult = async (e)=>{
+    const q = e.results[0][0].transcript; log('You', q);
+    if (q.toLowerCase().includes('stop')){ log('VaxGuard','Okay, stopping.'); stopVoice(); return; }
+    const r = await fetch('/api/voice/query', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ question:q, deviceId:'VAX-001' }) });
+    const d = await r.json(); log('VaxGuard', d.answer);
+    speak(d.answer, ()=>{ conversationTurns++; if(recognizing && conversationTurns<6) startVoiceTurn(); else stopVoice(); });
+  };
+  recInstance.onerror = ()=>{ document.getElementById('voiceBtn').classList.remove('listening'); recognizing=false; };
+  recInstance.start();
+}
 </script>
 </body>
 </html>
