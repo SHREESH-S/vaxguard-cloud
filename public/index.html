@@ -2,8 +2,8 @@
 <html><head><meta charset="UTF-8"><title>VaxGuard</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
-body{background:#070D18;color:#E7EDF6;font-family:sans-serif;padding:16px;max-width:640px;margin:auto}
-h2{background:linear-gradient(90deg,#4BA3E8,#34C77B);-webkit-background-clip:text;background-clip:text;color:transparent;margin-bottom:4px}
+body{background:#070D18;color:#E7EDF6;font-family:sans-serif;padding:16px;max-width:680px;margin:auto}
+h2{background:linear-gradient(90deg,#4BA3E8,#34C77B);-webkit-background-clip:text;background-clip:text;color:transparent;margin-bottom:2px}
 .card{background:#101B2E;border:1px solid #223350;border-radius:10px;padding:16px;margin-bottom:12px;box-shadow:0 2px 8px rgba(0,0,0,.3)}
 .big{font-size:32px;font-weight:bold}
 .SAFE{color:#34C77B}.WATCH{color:#E8B84B}.WARNING{color:#E8862E}.CRITICAL{color:#E5484D}.SENSOR_FAULT{color:#9B7BE0}.RECOVERY{color:#4BA3E8}
@@ -23,6 +23,8 @@ small{color:#8CA0BE}
 .badge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:bold}
 .badge.ok{background:#123322;color:#34C77B}
 .badge.bad{background:#3A1414;color:#E5484D}
+.badge.warn{background:#3A2E14;color:#E8B84B}
+ul{padding-left:18px;font-size:13px;line-height:1.6}
 </style></head>
 <body>
 <h2>🛡️ VaxGuard</h2>
@@ -32,24 +34,22 @@ small{color:#8CA0BE}
   <div class="tab active" data-screen="dash">Dashboard</div>
   <div class="tab" data-screen="history">History</div>
   <div class="tab" data-screen="alerts">Alerts</div>
-  <div class="tab" data-screen="demo">Demo Mode</div>
+  <div class="tab" data-screen="insights">Insights</div>
   <div class="tab" data-screen="security">Security & Health</div>
+  <div class="tab" data-screen="audit">Audit</div>
+  <div class="tab" data-screen="reports">Reports</div>
   <div class="tab" data-screen="admin">Admin</div>
-  <div class="tab" data-screen="pay">Payments</div>
 </div>
 
 <div class="screen active" id="dash">
-  <div style="margin-bottom:8px">
-    <button id="modeReal" class="active" onclick="setViewMode('REAL')">Real</button>
-    <button id="modeDemo" onclick="setViewMode('DEMO')">Demo</button>
-  </div>
   <div class="card"><div>Temperature</div><div class="big" id="temp">--°C</div></div>
   <div class="card"><div>State</div><div class="big" id="state">--</div></div>
   <div class="card"><div>Vibration events (10s window)</div><div class="big" id="vib">--</div></div>
-  <div class="card"><div>AI Insight</div><div id="insightText" style="font-size:14px;line-height:1.5">Loading…</div></div>
+  <div class="card"><div>AI Summary</div><div id="insightText" style="font-size:14px;line-height:1.5">Loading…</div></div>
   <div class="card">
     <button id="voiceBtn" onclick="toggleVoice()">🎙 Ask VaxGuard</button>
     <button onclick="stopVoice()">⏹ Stop</button>
+    <button id="voiceAlertBtn" onclick="toggleVoiceAlerts()">🔊 Voice Alerts: OFF</button>
     <div id="voiceLog"></div>
   </div>
 </div>
@@ -66,35 +66,23 @@ small{color:#8CA0BE}
 
 <div class="screen" id="alerts"><div class="card" id="alertsList">Loading…</div></div>
 
-<div class="screen" id="demo">
-  <div class="card">
-    <div>Simulate temperature</div>
-    <button onclick="pushDemo(4)">Normal (4°C)</button>
-    <button onclick="pushDemo(9.5)">High (9.5°C)</button>
-    <button onclick="pushDemo(-1)">Low (-1°C)</button>
-    <input type="range" id="demoSlider" min="-5" max="15" step="0.5" value="4" oninput="pushDemo(this.value)">
-    <div id="demoReadout" style="text-align:center;font-size:20px">4°C</div>
-    <small>Telegram only fires here for CRITICAL, clearly tagged [DEMO/TEST].</small>
-  </div>
+<div class="screen" id="insights">
+  <div class="card"><div>Trend & Prediction</div><div id="insTrend">Loading…</div></div>
+  <div class="card"><div>Cold-Chain Exposure Index</div><div id="insExposure">Loading…</div><small id="insExposureNote"></small></div>
+  <div class="card"><div>Friendly Advice</div><ul id="insAdvice"></ul></div>
+  <div class="card"><div>Patterns & Comparisons</div><div id="insPatterns">Loading…</div></div>
+  <div class="card"><div>Data Quality</div><div id="insQuality">Loading…</div></div>
 </div>
 
 <div class="screen" id="security">
-  <div class="card">
-    <div>Sensor Health</div>
-    <div id="sensorHealthBox">Loading…</div>
-  </div>
-  <div class="card">
-    <div>Tamper / Movement Check</div>
-    <div id="tamperBox">Loading…</div>
-  </div>
+  <div class="card"><div>Sensor Health</div><div id="sensorHealthBox">Loading…</div></div>
+  <div class="card"><div>Tamper / Movement Check</div><div id="tamperBox">Loading…</div></div>
   <div class="card">
     <div>Device Location</div>
     <div id="locationBox">Loading…</div>
     <div id="locationEdit" style="display:none;margin-top:8px">
-      <input id="locLat" placeholder="Latitude">
-      <input id="locLng" placeholder="Longitude">
-      <input id="locLabel" placeholder="Label (e.g. Pharmacy Store Room)">
-      <button onclick="saveLocation()">Save Location</button>
+      <input id="locLat" placeholder="Latitude"><input id="locLng" placeholder="Longitude"><input id="locLabel" placeholder="Label (e.g. Pharmacy Store Room)">
+      <button onclick="saveLocation()">Save Location (overrides auto-detect)</button>
     </div>
   </div>
   <div class="card" id="securityAdminBox" style="display:none">
@@ -104,29 +92,36 @@ small{color:#8CA0BE}
   </div>
 </div>
 
+<div class="screen" id="audit"><div class="card" id="auditList">Log in as admin to view the audit log.</div></div>
+
+<div class="screen" id="reports">
+  <div class="card">
+    <select id="reportRange"><option value="7">Last 7 days</option><option value="30">Last 30 days</option></select>
+    <button onclick="loadReport()">Generate Report</button>
+    <button onclick="downloadReport()">⬇ Download CSV</button>
+    <div id="reportBox" style="margin-top:10px">Log in as admin to generate reports.</div>
+  </div>
+</div>
+
 <div class="screen" id="admin">
   <div class="card">
     <div>Admin Login</div>
-    <input id="user" placeholder="Username">
-    <input id="pass" type="password" placeholder="Password">
+    <input id="user" placeholder="Username"><input id="pass" type="password" placeholder="Password">
     <button onclick="login()">Sign in</button>
     <div id="loginStatus" style="font-size:13px;margin-top:6px"></div>
   </div>
   <div class="card" id="configPanel" style="display:none">
     <div>Thresholds</div>
-    <input id="cfgLower" placeholder="tempLower">
-    <input id="cfgUpper" placeholder="tempUpper">
+    <input id="cfgLower" placeholder="tempLower"><input id="cfgUpper" placeholder="tempUpper">
     <button onclick="saveConfig()">Save</button>
   </div>
 </div>
 
-<div class="screen" id="pay"><div class="card" id="plansList">Loading plans…</div></div>
-
 <script>
 let authToken = null, isAdmin = false;
-let viewMode = 'REAL';
 let chart = null;
 let recognizing = false, conversationTurns = 0;
+let voiceAlertsOn = false, lastSeenEventId = null;
 
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
   document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
@@ -135,52 +130,61 @@ document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
   document.getElementById(t.dataset.screen).classList.add('active');
   if (t.dataset.screen === 'history') loadHistory();
   if (t.dataset.screen === 'alerts') loadAlerts();
-  if (t.dataset.screen === 'pay') loadPlans();
   if (t.dataset.screen === 'security') loadSecurity();
+  if (t.dataset.screen === 'insights') loadInsightsScreen();
+  if (t.dataset.screen === 'audit') loadAudit();
 });
-
-function setViewMode(m) {
-  viewMode = m;
-  document.getElementById('modeReal').classList.toggle('active', m === 'REAL');
-  document.getElementById('modeDemo').classList.toggle('active', m === 'DEMO');
-  refresh(); loadInsight();
-}
 
 async function refresh() {
   try {
-    const r = await fetch(`/api/sensors/latest?deviceId=VAX-001&mode=${viewMode}`);
+    const r = await fetch('/api/sensors/latest?deviceId=VAX-001');
     const d = await r.json();
     if (d) {
       document.getElementById('temp').textContent = (d.temperature != null ? d.temperature.toFixed(1) : '--') + '°C';
-      document.getElementById('state').textContent = d.state;
+      document.getElementById('state').textContent = d.state + (d.simulated ? ' (SIM)' : '');
       document.getElementById('state').className = 'big ' + d.state;
       document.getElementById('vib').textContent = d.vibrationCount || 0;
-      window.__lastReading = d;
     }
   } catch (e) {}
 }
 async function loadInsight() {
   try {
-    const r = await fetch(`/api/ai/insights?deviceId=VAX-001&mode=${viewMode}`);
+    const r = await fetch('/api/ai/insights?deviceId=VAX-001');
     const d = await r.json();
     window.__lastInsight = d;
-    if (d.message) { document.getElementById('insightText').textContent = d.message; return; }
-    let lines = [`Trend: ${d.trend.direction}`, d.eta.willCross ? d.eta.message : 'No threshold crossing predicted.'];
-    if (d.anomaly.isAnomaly) lines.push('⚠️ Current reading is statistically unusual.');
-    if (d.drift.available && d.drift.driftSuspected) lines.push('⚠️ Possible slow sensor drift detected.');
-    if (d.vibrationCorrelation.likelyDoorOpenEvents > 0) lines.push(`${d.vibrationCorrelation.likelyDoorOpenEvents} likely door-open event(s) recently.`);
-    if (d.tamperCheck && d.tamperCheck.suspected) lines.push('🔒 Possible tamper/movement — long silence + vibration burst.');
-    lines.push(`Confidence: ${d.confidence}`);
-    document.getElementById('insightText').innerHTML = lines.join('<br>');
+    document.getElementById('insightText').textContent = d.message || d.summary;
   } catch (e) {}
 }
 refresh(); loadInsight();
 setInterval(refresh, 5000);
 setInterval(loadInsight, 20000);
 
+// Proactive voice alerts: poll events, speak new dangerous ones automatically when toggled on
+async function pollForVoiceAlerts() {
+  if (!voiceAlertsOn) return;
+  try {
+    const r = await fetch('/api/events');
+    const events = await r.json();
+    if (!events.length) return;
+    const newest = events[0];
+    if (lastSeenEventId === null) { lastSeenEventId = newest.id; return; }
+    if (newest.id !== lastSeenEventId && ['WARNING', 'CRITICAL', 'SENSOR_FAULT'].includes(newest.severity)) {
+      lastSeenEventId = newest.id;
+      speak(`Alert. ${newest.reason}.`);
+    } else { lastSeenEventId = newest.id; }
+  } catch (e) {}
+}
+setInterval(pollForVoiceAlerts, 6000);
+function toggleVoiceAlerts() {
+  voiceAlertsOn = !voiceAlertsOn;
+  document.getElementById('voiceAlertBtn').textContent = '🔊 Voice Alerts: ' + (voiceAlertsOn ? 'ON' : 'OFF');
+  document.getElementById('voiceAlertBtn').classList.toggle('active', voiceAlertsOn);
+  if (voiceAlertsOn) speak('Voice alerts are now on. I will announce danger conditions automatically.');
+}
+
 async function loadHistory() {
   const range = document.getElementById('rangeSelect').value;
-  const r = await fetch(`/api/history?range=${range}&deviceId=VAX-001&mode=${viewMode}`);
+  const r = await fetch(`/api/history?range=${range}&deviceId=VAX-001`);
   const d = await r.json();
   const labels = d.series.map(p => new Date(p.t).toLocaleTimeString());
   const temps = d.series.map(p => p.temperature);
@@ -193,35 +197,43 @@ async function loadHistory() {
 }
 
 async function loadAlerts() {
-  const r = await fetch(`/api/alerts?mode=${viewMode}`);
+  const r = await fetch('/api/alerts');
   const d = await r.json();
   document.getElementById('alertsList').innerHTML = d.length ? d.map(e =>
     `<div class="row"><span class="${e.severity}">${e.severity}</span><span>${e.reason}</span><small>${new Date(e.timestamp).toLocaleString()}</small></div>`
   ).join('') : 'No alerts yet.';
 }
 
-async function pushDemo(temp) {
-  temp = parseFloat(temp);
-  document.getElementById('demoSlider').value = temp;
-  document.getElementById('demoReadout').textContent = temp + '°C';
-  await fetch('/api/demo/telemetry', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ deviceId: 'VAX-001', temperature: temp, humidity: 50 }) });
-  if (viewMode === 'DEMO') { refresh(); loadInsight(); }
+async function loadInsightsScreen() {
+  const r = await fetch('/api/ai/insights?deviceId=VAX-001');
+  const d = await r.json();
+  if (d.message) { document.getElementById('insTrend').textContent = d.message; return; }
+  document.getElementById('insTrend').innerHTML = `Direction: <b>${d.trend.direction}</b><br>${d.eta.message}${d.anomaly.isAnomaly ? '<br>⚠️ Current reading is statistically unusual (z=' + d.anomaly.zScore + ')' : ''}${d.learningMode.learningMode ? '<br><small>Still learning this fridge\\'s pattern (' + d.learningMode.samplesCollected + '/' + d.learningMode.samplesNeeded + ' samples)</small>' : ''}`;
+  document.getElementById('insExposure').innerHTML = `Score: <b>${d.coldChainExposure.score}/100</b> — <span class="badge ${d.coldChainExposure.score > 80 ? 'ok' : d.coldChainExposure.score > 50 ? 'warn' : 'bad'}">${d.coldChainExposure.label}</span><br>Excursion minutes (7d): ${d.coldChainExposure.rawExcursionMinutes7d}`;
+  document.getElementById('insExposureNote').textContent = d.coldChainExposure.disclaimer;
+  document.getElementById('insAdvice').innerHTML = d.advice.map(a => `<li>${a}</li>`).join('');
+  let patterns = [];
+  if (d.drift.available) patterns.push(`Sensor drift: ${d.drift.driftSuspected ? '⚠️ suspected' : 'none detected'} (${d.drift.driftPerDay}°C/day)`);
+  if (d.weekOverWeek.available) patterns.push(`vs last week: ${d.weekOverWeek.changePerCent > 0 ? '+' : ''}${d.weekOverWeek.changePerCent}%`);
+  if (d.vibrationCorrelation.likelyDoorOpenEvents) patterns.push(`Likely door-open events: ${d.vibrationCorrelation.likelyDoorOpenEvents}`);
+  if (d.humidityStability.available) patterns.push(`Humidity: ${d.humidityStability.meanHumidity}% avg, ${d.humidityStability.stable ? 'stable' : 'variable'}`);
+  document.getElementById('insPatterns').innerHTML = patterns.join('<br>') || 'Not enough data yet.';
+  document.getElementById('insQuality').innerHTML = `Data completeness: ${d.dataCompleteness.completenessPct}%<br>Reliability score: ${d.reliability.score}/100<br>Confidence: ${d.confidence}`;
 }
 
 async function loadSecurity() {
-  const r = await fetch(`/api/ai/insights?deviceId=VAX-001&mode=REAL`);
+  const r = await fetch('/api/ai/insights?deviceId=VAX-001');
   const d = await r.json();
   if (d.sensorHealth) {
-    document.getElementById('sensorHealthBox').innerHTML = d.sensorHealth.score != null
-      ? `Score: <b>${d.sensorHealth.score}/100</b><br>Faults last 7d: ${d.sensorHealth.faultsLast7d}, last 30d: ${d.sensorHealth.faultsLast30d}<br>${d.sensorHealth.maintenanceRecommended ? '<span class="badge bad">Maintenance recommended</span>' : '<span class="badge ok">Healthy</span>'}`
-      : d.sensorHealth.note;
+    document.getElementById('sensorHealthBox').innerHTML = `Score: <b>${d.sensorHealth.score}/100</b><br>Faults last 7d: ${d.sensorHealth.faultsLast7d}, last 30d: ${d.sensorHealth.faultsLast30d}<br>${d.sensorHealth.maintenanceRecommended ? '<span class="badge bad">Maintenance recommended</span>' : '<span class="badge ok">Healthy</span>'}`;
   }
   if (d.tamperCheck) {
-    document.getElementById('tamperBox').innerHTML = d.tamperCheck.suspected
-      ? `<span class="badge bad">Suspected</span> ${d.tamperCheck.note}` : `<span class="badge ok">Normal</span> No unusual gap+vibration pattern detected.`;
+    document.getElementById('tamperBox').innerHTML = d.tamperCheck.suspected ? `<span class="badge bad">Suspected</span> ${d.tamperCheck.note}` : `<span class="badge ok">Normal</span> No unusual pattern detected.`;
   }
   if (d.location) {
-    document.getElementById('locationBox').textContent = d.location.label ? `${d.location.label} (${d.location.lat}, ${d.location.lng})` : 'No location set yet.';
+    document.getElementById('locationBox').innerHTML = d.location.label
+      ? `${d.location.label} (${d.location.lat}, ${d.location.lng})<br><small>Source: ${d.location.source}, accuracy: ${d.location.accuracy}</small>`
+      : 'No location detected yet.';
     document.getElementById('locationEdit').style.display = isAdmin ? 'block' : 'none';
   }
   document.getElementById('securityAdminBox').style.display = isAdmin ? 'block' : 'none';
@@ -234,9 +246,38 @@ async function saveLocation() {
 async function checkAudit() {
   const r = await fetch('/api/audit/verify', { headers: { 'Authorization': 'Bearer ' + authToken } });
   const d = await r.json();
-  document.getElementById('auditResult').innerHTML = d.tampered
-    ? `<span class="badge bad">TAMPERED</span> chain broke at entry ${d.brokenAt}`
-    : `<span class="badge ok">Intact</span> ${d.entriesChecked} entries verified`;
+  document.getElementById('auditResult').innerHTML = d.tampered ? `<span class="badge bad">TAMPERED</span> chain broke at entry ${d.brokenAt}` : `<span class="badge ok">Intact</span> ${d.entriesChecked} entries verified`;
+}
+async function loadAudit() {
+  if (!authToken) { document.getElementById('auditList').textContent = 'Log in as admin to view the audit log.'; return; }
+  const r = await fetch('/api/audit', { headers: { 'Authorization': 'Bearer ' + authToken } });
+  const d = await r.json();
+  document.getElementById('auditList').innerHTML = d.map(e => `<div class="row"><span>${e.action}</span><span>${e.actor || '-'}</span><small>${new Date(e.timestamp).toLocaleString()}</small></div>`).join('');
+}
+
+async function loadReport() {
+  if (!authToken) { document.getElementById('reportBox').textContent = 'Log in as admin first.'; return; }
+  const days = document.getElementById('reportRange').value;
+  const from = Date.now() - days * 24 * 3600e3;
+  const r = await fetch(`/api/reports?from=${from}&to=${Date.now()}&deviceId=VAX-001`, { headers: { 'Authorization': 'Bearer ' + authToken } });
+  const d = await r.json();
+  document.getElementById('reportBox').innerHTML = `
+    <div class="row"><span>Mean temperature</span><span>${d.temperatureMean}°C</span></div>
+    <div class="row"><span>Std deviation</span><span>${d.temperatureStdDev}</span></div>
+    <div class="row"><span>Samples</span><span>${d.samples}</span></div>
+    <div class="row"><span>Excursion readings</span><span>${d.excursionReadings}</span></div>
+    <div class="row"><span>Vibration events</span><span>${d.vibrationEventsTotal}</span></div>
+    <div class="row"><span>Cold-chain exposure</span><span>${d.coldChainExposure.score}/100 (${d.coldChainExposure.label})</span></div>`;
+}
+async function downloadReport() {
+  if (!authToken) { document.getElementById('reportBox').textContent = 'Log in as admin first.'; return; }
+  const days = document.getElementById('reportRange').value;
+  const from = Date.now() - days * 24 * 3600e3;
+  const r = await fetch(`/api/reports/export?from=${from}&to=${Date.now()}&deviceId=VAX-001`, { headers: { 'Authorization': 'Bearer ' + authToken } });
+  const blob = await r.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = `vaxguard-report-${Date.now()}.csv`; a.click();
+  URL.revokeObjectURL(url);
 }
 
 async function login() {
@@ -263,15 +304,7 @@ async function saveConfig() {
   document.getElementById('loginStatus').textContent = d.ok ? 'Config saved (v' + d.config.configVersion + ')' : 'Save failed';
 }
 
-async function loadPlans() {
-  const r = await fetch('/api/payments/plans');
-  const d = await r.json();
-  document.getElementById('plansList').innerHTML = Object.entries(d).map(([k, p]) =>
-    `<div class="row"><span>${p.name}</span><span>${p.priceINR === null ? 'Contact us' : '₹' + p.priceINR}</span></div>`
-  ).join('');
-}
-
-// ---- Voice assistant: multi-turn "conversation mode" (push-to-talk start, then auto-continues) ----
+// ---- Voice assistant: multi-turn Q&A (#31) + proactive alerts (#30) ----
 function log(who, text) { document.getElementById('voiceLog').innerHTML = '<div><b>' + who + ':</b> ' + text + '</div>' + document.getElementById('voiceLog').innerHTML; }
 function speak(t, onEnd) {
   if (!('speechSynthesis' in window)) { if (onEnd) onEnd(); return; }
@@ -280,13 +313,9 @@ function speak(t, onEnd) {
   speechSynthesis.speak(u);
 }
 let recInstance = null;
-function toggleVoice() { recognizing ? stopVoice() : startVoiceTurn(true); }
-function stopVoice() {
-  recognizing = false; conversationTurns = 0;
-  if (recInstance) recInstance.abort();
-  document.getElementById('voiceBtn').classList.remove('listening');
-}
-function startVoiceTurn(isFirst) {
+function toggleVoice() { recognizing ? stopVoice() : startVoiceTurn(); }
+function stopVoice() { recognizing = false; conversationTurns = 0; if (recInstance) recInstance.abort(); document.getElementById('voiceBtn').classList.remove('listening'); }
+function startVoiceTurn() {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) { log('VaxGuard', 'Voice recognition not supported in this browser — try Chrome.'); return; }
   recognizing = true;
@@ -298,31 +327,30 @@ function startVoiceTurn(isFirst) {
     if (q.includes('stop')) { log('VaxGuard', 'Okay, stopping.'); stopVoice(); return; }
     const ans = await answerQuery(q);
     log('VaxGuard', ans);
-    speak(ans, () => {
-      conversationTurns++;
-      if (recognizing && conversationTurns < 6) startVoiceTurn(false);
-      else stopVoice();
-    });
+    speak(ans, () => { conversationTurns++; if (recognizing && conversationTurns < 6) startVoiceTurn(); else stopVoice(); });
   };
   recInstance.onerror = () => { document.getElementById('voiceBtn').classList.remove('listening'); recognizing = false; };
   recInstance.start();
 }
 async function answerQuery(q) {
   const [latest, insight] = await Promise.all([
-    fetch(`/api/sensors/latest?deviceId=VAX-001&mode=${viewMode}`).then(r => r.json()),
-    fetch(`/api/ai/insights?deviceId=VAX-001&mode=${viewMode}`).then(r => r.json())
+    fetch('/api/sensors/latest?deviceId=VAX-001').then(r => r.json()),
+    fetch('/api/ai/insights?deviceId=VAX-001').then(r => r.json())
   ]);
   if (!latest) return "I don't have data yet.";
-  if (q.includes('help')) return 'You can ask about temperature, humidity, trend, prediction, vibration, risk score, sensor health, security, or say stop to end.';
-  if (q.includes('why') || q.includes('risk')) return latest.riskReasons && latest.riskReasons.length ? latest.riskReasons.join('. ') + '.' : 'No active risk factors right now.';
+  if (q.includes('help')) return 'Ask me about temperature, humidity, trend, prediction, vibration, risk, sensor health, security, location, vaccine quality, or advice. Say stop to end.';
+  if (q.includes('advice') || q.includes('what should i do') || q.includes('what do i do')) return insight.advice ? insight.advice.join(' ') : 'No advice available yet.';
+  if (q.includes('quality') || q.includes('vaccine')) return insight.coldChainExposure ? `Cold-chain exposure index is ${insight.coldChainExposure.score} out of 100, rated ${insight.coldChainExposure.label}. This is a decision-support estimate, not a certified test.` : 'Not enough data yet.';
+  if (q.includes('location') || q.includes('where')) return insight.location?.label ? `Device is located at ${insight.location.label}.` : 'Location not detected yet.';
+  if (q.includes('why') || q.includes('risk')) return latest.riskReasons?.length ? latest.riskReasons.join('. ') + '.' : 'No active risk factors right now.';
   if (q.includes('humidity')) return `Humidity is ${latest.humidity != null ? latest.humidity.toFixed(0) : 'unknown'} percent.`;
   if (q.includes('temperature')) return `Temperature is ${latest.temperature.toFixed(1)} degrees.`;
   if (q.includes('safe') || q.includes('okay') || q.includes('ok')) return latest.state === 'SAFE' ? 'Yes, VaxGuard is safe.' : `Currently in ${latest.state} state.`;
   if (q.includes('trend') || q.includes('rising') || q.includes('falling')) return insight.trend ? `Trend is ${insight.trend.direction.toLowerCase()}.` : 'Not enough data for a trend yet.';
-  if (q.includes('predict') || q.includes('will it')) return insight.eta && insight.eta.willCross ? insight.eta.message : 'No danger predicted right now.';
+  if (q.includes('predict') || q.includes('will it')) return insight.eta?.willCross ? insight.eta.message : 'No danger predicted right now.';
   if (q.includes('vibration')) return `${latest.vibrationCount || 0} vibration events in the last window.`;
-  if (q.includes('sensor health') || q.includes('health')) return insight.sensorHealth && insight.sensorHealth.score != null ? `Sensor health score is ${insight.sensorHealth.score} out of 100.` : 'Sensor health is only tracked for real hardware.';
-  if (q.includes('security') || q.includes('tamper')) return insight.tamperCheck && insight.tamperCheck.suspected ? 'Possible tamper or movement detected — worth a physical check.' : 'No security concerns right now.';
+  if (q.includes('health')) return insight.sensorHealth ? `Sensor health score is ${insight.sensorHealth.score} out of 100.` : 'No health data yet.';
+  if (q.includes('security') || q.includes('tamper')) return insight.tamperCheck?.suspected ? 'Possible tamper or movement detected — worth a physical check.' : 'No security concerns right now.';
   return `Current state is ${latest.state}.`;
 }
 </script>
