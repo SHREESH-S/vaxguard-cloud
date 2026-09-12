@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>VaxGuard</title>
+<style>
+body{background:#0A1220;color:#E7EDF6;font-family:sans-serif;padding:20px;max-width:500px;margin:auto}
+.card{background:#101B2E;border:1px solid #223350;border-radius:8px;padding:16px;margin-bottom:12px}
+.big{font-size:32px;font-weight:bold}
+.SAFE{color:#34C77B}.WATCH{color:#E8B84B}.WARNING{color:#E8862E}.CRITICAL{color:#E5484D}.SENSOR_FAULT{color:#9B7BE0}
+button{background:#234164;color:#fff;border:1px solid #2E4E75;padding:10px 16px;border-radius:6px;cursor:pointer;margin:4px 0;width:100%}
+input{width:100%;padding:8px;margin:4px 0;background:#16233A;border:1px solid #223350;color:#fff;border-radius:6px}
+#voiceLog{max-height:150px;overflow-y:auto;font-size:13px}
+</style></head>
+<body>
+<h2>🛡️ VaxGuard Dashboard</h2>
+
+<div class="card">
+  <div>Temperature</div>
+  <div class="big" id="temp">--°C</div>
+</div>
+<div class="card">
+  <div>State</div>
+  <div class="big" id="state">--</div>
+</div>
+<div class="card">
+  <div>Vibration events</div>
+  <div class="big" id="vib">--</div>
+</div>
+
+<div class="card">
+  <button onclick="startVoice()">🎙 Ask VaxGuard</button>
+  <div id="voiceLog"></div>
+</div>
+
+<div class="card">
+  <div>Admin Login</div>
+  <input id="user" placeholder="Username">
+  <input id="pass" type="password" placeholder="Password">
+  <button onclick="login()">Sign in</button>
+  <div id="loginStatus"></div>
+</div>
+
+<script>
+async function refresh(){
+  try{
+    const r = await fetch('/api/sensors/latest?deviceId=VAX-001');
+    const d = await r.json();
+    if(d){
+      document.getElementById('temp').textContent = (d.temperature!=null? d.temperature.toFixed(1):'--')+'°C';
+      document.getElementById('state').textContent = d.state;
+      document.getElementById('state').className = 'big '+d.state;
+      document.getElementById('vib').textContent = d.vibrationCount||0;
+    }
+  }catch(e){}
+}
+refresh(); setInterval(refresh, 5000);
+
+async function login(){
+  try{
+    const r = await fetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({username:document.getElementById('user').value,password:document.getElementById('pass').value})});
+    const d = await r.json();
+    document.getElementById('loginStatus').textContent = d.token? 'Signed in as '+d.role : 'Login failed';
+  }catch(e){ document.getElementById('loginStatus').textContent='Error'; }
+}
+
+function log(who,text){
+  document.getElementById('voiceLog').innerHTML = '<div><b>'+who+':</b> '+text+'</div>' + document.getElementById('voiceLog').innerHTML;
+}
+function speak(t){ if('speechSynthesis' in window){ speechSynthesis.speak(new SpeechSynthesisUtterance(t)); } }
+async function startVoice(){
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if(!SR){ log('VaxGuard','Voice recognition not supported in this browser, try Chrome.'); return; }
+  const rec = new SR(); rec.lang='en-US';
+  rec.onresult = async (e)=>{
+    const q = e.results[0][0].transcript;
+    log('You', q);
+    const r = await fetch('/api/sensors/latest?deviceId=VAX-001'); const d = await r.json();
+    let ans = "I don't have data yet.";
+    if(d){
+      if(q.toLowerCase().includes('temperature')) ans = 'Temperature is '+d.temperature.toFixed(1)+' degrees.';
+      else if(q.toLowerCase().includes('safe')) ans = d.state==='SAFE' ? 'Yes, VaxGuard is safe.' : 'Currently in '+d.state+' state.';
+      else ans = 'Current state is '+d.state+'.';
+    }
+    log('VaxGuard', ans); speak(ans);
+  };
+  rec.start();
+}
+</script>
+</body></html>
