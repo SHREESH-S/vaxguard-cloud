@@ -260,7 +260,7 @@ app.post('/api/payments/webhook', (req, res) => {
 });
 
 // ---------------- Serve dashboard (voice assistant + payment UI built in) ----------------
-app.use('/', express.static(path.join(__dirname, '..', 'frontend')));
+app.use('/', express.static(path.join(__dirname, 'public')));
 
 app.use((err, req, res, next) => { console.error(err); res.status(500).json({ error: 'Internal error' }); });
 
