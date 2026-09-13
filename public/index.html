@@ -1,75 +1,251 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>VaxGuard — Cold Chain Sentinel</title>
-  <link rel="stylesheet" href="style.css" />
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VAXGUARD PRO — Cold-Chain Guardian</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
-  <div class="modeband" id="modeband">
-    <span id="modeText">DEMO MODE — Simulated Data</span>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="brand">
+        <h1>VAXGUARD <span class="badge">PRO</span></h1>
+        <p id="locationLabel">Pharmacy Main Cold-Chain Unit A</p>
+      </div>
+      <div class="header-status">
+        <span id="modeBadge" class="status-badge real">REAL MODE</span>
+        <span id="stateBadge" class="status-badge safe">SAFE</span>
+      </div>
+    </header>
+
+    <!-- Navigation Tabs -->
+    <nav class="nav-tabs">
+      <button class="tab-btn active" onclick="switchScreen('live', event)">Live</button>
+      <button class="tab-btn" onclick="switchScreen('insights', event)">AI Insights</button>
+      <button class="tab-btn" onclick="switchScreen('graph', event)">Graph</button>
+      <button class="tab-btn" onclick="switchScreen('vibration', event)">Vibration</button>
+      <button class="tab-btn" onclick="switchScreen('alerts', event)">Alerts</button>
+      <button class="tab-btn" onclick="switchScreen('timeline', event)">Timeline</button>
+      <button class="tab-btn" onclick="switchScreen('assistant', event)">AI Voice</button>
+      <button class="tab-btn" onclick="switchScreen('audit', event)">Audit</button>
+      <button class="tab-btn" onclick="switchScreen('download', event)">Reports</button>
+      <button class="tab-btn" onclick="switchScreen('health', event)">Health</button>
+      <button class="tab-btn" onclick="switchScreen('settings', event)">Settings</button>
+      <button class="tab-btn" onclick="switchScreen('about', event)">About</button>
+    </nav>
+
+    <!-- Emergency Banner -->
+    <div id="emergencyBanner" class="emergency-banner hidden">
+      ⚠️ <span id="emergencyText">Critical cold-chain excursion detected! Inspect environment immediately.</span>
+    </div>
+
+    <!-- SCREENS CONTAINER -->
+    <main class="main-content">
+
+      <!-- SCREEN 1: LIVE DASHBOARD -->
+      <section id="screen-live" class="screen active">
+        <div class="grid-dashboard">
+          <div class="card">
+            <span class="card-label">Temperature</span>
+            <div id="valTemp" class="card-value">-- °C</div>
+          </div>
+          <div class="card">
+            <span class="card-label">Humidity</span>
+            <div id="valHum" class="card-value">-- %</div>
+          </div>
+          <div class="card">
+            <span class="card-label">Vibration Status</span>
+            <div id="valVib" class="card-value">--</div>
+          </div>
+          <div class="card">
+            <span class="card-label">System State</span>
+            <div id="valState" class="card-value">--</div>
+          </div>
+          <div class="card">
+            <span class="card-label">Risk Score (0-100)</span>
+            <div id="valRisk" class="card-value">--</div>
+          </div>
+          <div class="card">
+            <span class="card-label">Condition Score</span>
+            <div id="valCondition" class="card-value">--</div>
+          </div>
+          <div class="card">
+            <span class="card-label">Sensor Health</span>
+            <div id="valHealth" class="card-value">--</div>
+          </div>
+          <div class="card">
+            <span class="card-label">Data Confidence</span>
+            <div id="valConfidence" class="card-value">--</div>
+          </div>
+          <div class="card full-width">
+            <span class="card-label">AI Advisory & Recommendation</span>
+            <div id="valAdvisory" class="advisory-text">Initializing guardian system...</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 2: AI INSIGHTS -->
+      <section id="screen-insights" class="screen">
+        <div class="card full-width">
+          <h3>Explainable AI Intelligence</h3>
+          <p id="insightExplanation" class="insight-p">Analyzing live sensor telemetry, historical slopes, and environmental stability...</p>
+          <div class="insight-grid">
+            <div><strong>Trend Direction:</strong> <span id="insightTrend">--</span></div>
+            <div><strong>Predicted Risk:</strong> <span id="insightPredRisk">--</span></div>
+            <div><strong>Anomaly Score:</strong> <span id="insightAnomaly">--</span></div>
+            <div><strong>Event Correlation:</strong> <span id="insightCorrelation">--</span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 3: TEMPERATURE GRAPH -->
+      <section id="screen-graph" class="screen">
+        <div class="card full-width">
+          <h3>Real-Time Temperature Trend</h3>
+          <canvas id="tempChart"></canvas>
+          <div class="analytics-row">
+            <div>Min: <span id="statMin">--</span>°C</div>
+            <div>Max: <span id="statMax">--</span>°C</div>
+            <div>Average: <span id="statAvg">--</span>°C</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 4: VIBRATION ANALYTICS -->
+      <section id="screen-vibration" class="screen">
+        <div class="grid-dashboard">
+          <div class="card">
+            <span class="card-label">Vibration State</span>
+            <div id="vibStateLive" class="card-value">Normal</div>
+          </div>
+          <div class="card">
+            <span class="card-label">Sensor Type</span>
+            <div class="card-value" style="font-size:16px;">SW-420 Digital Shock Sensor</div>
+          </div>
+          <div class="card full-width">
+            <span class="card-label">Vibration Intelligence Log</span>
+            <p id="vibLogDetail" class="insight-p">Monitoring for transient structural impacts and continuous mechanical disturbance.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 5: ALERT CENTER -->
+      <section id="screen-alerts" class="screen">
+        <div class="card full-width">
+          <h3>Active & Historical Alert Log</h3>
+          <div id="alertCenterList" class="scroll-list">No alerts recorded.</div>
+          <button class="btn" onclick="testTelegramAlert()">Send Test Telegram Alert</button>
+        </div>
+      </section>
+
+      <!-- SCREEN 6: INCIDENT TIMELINE -->
+      <section id="screen-timeline" class="screen">
+        <div class="card full-width">
+          <h3>Chronological Incident Timeline</h3>
+          <div id="timelineList" class="scroll-list">No incidents recorded.</div>
+        </div>
+      </section>
+
+      <!-- SCREEN 7: AI VOICE ASSISTANT -->
+      <section id="screen-assistant" class="screen">
+        <div class="card full-width">
+          <h3>VAXGUARD AI Voice Assistant</h3>
+          <p class="insight-p">Ask questions about temperature, risk factors, or recommended actions using voice or text.</p>
+          <div id="chatHistory" class="chat-box"></div>
+          <div class="chat-input-row">
+            <input type="text" id="chatInput" placeholder="Ask e.g., Why is the risk high?">
+            <button class="btn" onclick="sendChatMessage()">Send</button>
+            <button class="btn btn-alt" onclick="startVoiceRecognition()">🎙️ Speak</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 8: AUDIT HISTORY -->
+      <section id="screen-audit" class="screen">
+        <div class="card full-width">
+          <h3>Digital Cold-Chain Audit Trail</h3>
+          <div style="overflow-x:auto;">
+            <table class="audit-table" id="auditTable">
+              <thead>
+                <tr>
+                  <th>Timestamp</th>
+                  <th>Temp (°C)</th>
+                  <th>Hum (%)</th>
+                  <th>Vibration</th>
+                  <th>State</th>
+                  <th>Risk</th>
+                  <th>Mode</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td colspan="7" style="text-align:center;">No audit records available.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 9: DOWNLOAD CENTER -->
+      <section id="screen-download" class="screen">
+        <div class="card full-width">
+          <h3>Report & Data Export Center</h3>
+          <p class="insight-p">Download official audit reports and JSON telemetry logs for compliance archiving.</p>
+          <div class="btn-row">
+            <button class="btn" onclick="location.href='/api/export/csv'">📄 Download CSV Audit Report</button>
+            <button class="btn btn-alt" onclick="location.href='/api/export/json'">📦 Download JSON Telemetry</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- SCREEN 10: SYSTEM HEALTH -->
+      <section id="screen-health" class="screen">
+        <div class="grid-dashboard">
+          <div class="card"><span class="card-label">DHT11 Sensor</span><div id="healthDht" class="card-value">OK</div></div>
+          <div class="card"><span class="card-label">SW-420 Vibration</span><div id="healthVib" class="card-value">OK</div></div>
+          <div class="card"><span class="card-label">ESP32 Hardware</span><div id="healthEsp" class="card-value">Online</div></div>
+          <div class="card"><span class="card-label">Wi-Fi Connection</span><div id="healthWifi" class="card-value">Connected</div></div>
+          <div class="card"><span class="card-label">Cloud Server</span><div id="healthServer" class="card-value">Active</div></div>
+          <div class="card"><span class="card-label">Device Uptime</span><div id="healthUptime" class="card-value">0s</div></div>
+        </div>
+      </section>
+
+      <!-- SCREEN 11: SETTINGS -->
+      <section id="screen-settings" class="screen">
+        <div class="card full-width">
+          <h3>Cold-Chain Configuration</h3>
+          <div class="form-group">
+            <label>Location Label</label>
+            <input type="text" id="cfgLocation" value="Pharmacy Main Unit A">
+          </div>
+          <div class="form-group">
+            <label>Safe Max Temperature (°C)</label>
+            <input type="number" id="cfgMaxTemp" step="0.1" value="8.0">
+          </div>
+          <div class="form-group">
+            <label>Safe Min Temperature (°C)</label>
+            <input type="number" id="cfgMinTemp" step="0.1" value="2.0">
+          </div>
+          <button class="btn" onclick="saveSettings()">Save Configuration</button>
+          <div id="saveMsg" style="margin-top:10px; color:#4ade80; font-size:13px;"></div>
+        </div>
+      </section>
+
+      <!-- SCREEN 12: ABOUT -->
+      <section id="screen-about" class="screen">
+        <div class="card full-width">
+          <h3>About VAXGUARD PRO v3.0.0</h3>
+          <p class="insight-p">AI-Assisted Cold-Chain Guardian & Decision-Support Prototype.</p>
+          <p class="insight-p" style="font-size:12px; color:#94a3b8; margin-top:10px;">
+            <strong>Disclaimer:</strong> This system is an advanced engineering prototype for monitoring environmental parameters. It does not provide certified medical potency verification. Always adhere to official pharmaceutical cold-chain guidelines.
+          </p>
+        </div>
+      </section>
+
+    </main>
   </div>
-
-  <header class="topbar">
-    <div class="brand">
-      <strong>VaxGuard</strong>
-      <span>AI Cold-Chain Sentinel v3.0</span>
-    </div>
-    <div>
-      <span class="pill" id="wifiPill">WIFI —</span>
-      <button class="btn" id="modeToggleBtn">Switch Mode</button>
-    </div>
-  </header>
-
-  <main class="container">
-    <!-- Live Status -->
-    <section class="card">
-      <h1 id="severityLevel">NORMAL</h1>
-      <p id="severitySub">Waiting for first reading...</p>
-
-      <div class="stats">
-        <div class="stat">
-          <small>Temperature</small>
-          <div id="tempValue">-- °C</div>
-        </div>
-        <div class="stat">
-          <small>Humidity</small>
-          <div id="humValue">-- %</div>
-        </div>
-        <div class="stat">
-          <small>Vibration</small>
-          <div id="vibValue">--</div>
-        </div>
-        <div class="stat">
-          <small>Risk Score</small>
-          <div id="riskValue">--</div>
-        </div>
-      </div>
-
-      <p id="explanationText" class="explanation"></p>
-      <p id="recommendationText" class="recommendation"></p>
-      <p id="mythText" class="myth"></p>
-    </section>
-
-    <!-- Demo Controls -->
-    <section class="card" id="demoPanel">
-      <h3>Demo Control Panel</h3>
-      <div class="btn-grid">
-        <button class="demo-btn" data-cmd="normal">Normal</button>
-        <button class="demo-btn" data-cmd="low">Low Temp</button>
-        <button class="demo-btn" data-cmd="high">High Temp</button>
-        <button class="demo-btn" data-cmd="warning">Warning</button>
-        <button class="demo-btn danger" data-cmd="danger">Danger</button>
-        <button class="demo-btn" data-cmd="vibration">Vibration</button>
-        <button class="demo-btn" data-cmd="novibration">No Vibration</button>
-        <button class="demo-btn" data-cmd="sensorfault">Sensor Fault</button>
-        <button class="demo-btn" data-cmd="recovery">Recovery</button>
-      </div>
-    </section>
-  </main>
-
-  <script src="/socket.io/socket.io.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
