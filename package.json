@@ -1,19 +1,21 @@
 {
-  "name": "vaxguard-server",
+  "name": "vaxguard-x",
   "version": "1.0.0",
-  "description": "VaxGuard cold-chain monitoring backend - Express + Socket.IO + WebSocket bridge for ESP32",
+  "description": "VaxGuard X - AI-Assisted Cold-Chain Intelligence & Emergency Response Platform",
   "main": "server.js",
-  "type": "commonjs",
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js"
   },
   "dependencies": {
+    "cors": "^2.8.5",
     "dotenv": "^16.4.5",
-    "express": "^4.19.2",
-    "lowdb": "^1.0.0",
-    "node-fetch": "^2.7.0",
+    "express": "^4.21.0",
     "socket.io": "^4.7.5",
-    "ws": "^8.17.0"
-  }
+    "uuid": "^10.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
 }
