@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>VaxGuard — Cold-Chain Monitoring</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<div class="modeband" id="modeband">
+  <span class="modeband-dot" id="modeDot"></span>
+  <span id="modeText">DEMO MODE — Simulated Data</span>
+</div>
+
+<header class="topbar">
+  <div class="brand">
+    <svg width="30" height="30" viewBox="0 0 30 30" fill="none">
+      <path d="M15 2 L26 8 V16 C26 22.5 21 27 15 28.5 C9 27 4 22.5 4 16 V8 Z" stroke="#67e8f9" stroke-width="1.6" fill="rgba(103,232,249,0.08)"/>
+      <path d="M10.5 15.5 L13.5 18.5 L20 11" stroke="#67e8f9" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <div>
+      <div class="brand-title">VaxGuard</div>
+      <div class="brand-sub">Cold-chain sentinel — v2.0</div>
+    </div>
+  </div>
+  <div class="topbar-actions">
+    <span class="pill" id="wifiPill">WIFI —</span>
+    <span class="pill" id="incidentPill">No active incident</span>
+    <button class="btn ghost" id="modeToggleBtn">Switch mode</button>
+  </div>
+</header>
+
+<main class="grid">
+
+  <section class="panel severity-panel" id="severityPanel">
+    <div class="severity-level" id="severityLevel">NORMAL</div>
+    <div class="severity-sub" id="severitySub">Awaiting first reading…</div>
+    <div class="readouts">
+      <div class="readout">
+        <span class="readout-label">Temperature</span>
+        <span class="readout-value" id="tempValue">—</span>
+      </div>
+      <div class="readout">
+        <span class="readout-label">Humidity</span>
+        <span class="readout-value" id="humValue">—</span>
+      </div>
+      <div class="readout">
+        <span class="readout-label">Vibration</span>
+        <span class="readout-value" id="vibValue">—</span>
+      </div>
+    </div>
+    <div class="scorebars">
+      <div class="scorebar">
+        <div class="scorebar-head"><span>Risk score</span><span id="riskScoreText">0</span></div>
+        <div class="track"><div class="fill risk" id="riskFill"></div></div>
+      </div>
+      <div class="scorebar">
+        <div class="scorebar-head"><span>Condition score</span><span id="conditionScoreText">100</span></div>
+        <div class="track"><div class="fill condition" id="conditionFill"></div></div>
+      </div>
+      <div class="scorebar">
+        <div class="scorebar-head"><span>Confidence</span><span id="confidenceText">—</span></div>
+        <div class="track"><div class="fill confidence" id="confidenceFill"></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Risk trajectory & graph <span class="tag" id="graphModeTag">DEMO DATA</span></h2>
+    <canvas id="riskChart" height="140"></canvas>
+    <div class="trajectory-row">
+      <span class="trajectory" id="trajectoryLabel">STABLE</span>
+      <span class="muted" id="predictedRiskText">Predicted risk: —</span>
+      <span class="muted" id="priorityText">Priority: —</span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>AI explanation</h2>
+    <p class="explanation" id="explanationText">Waiting for the first event…</p>
+    <p class="correlation" id="correlationText"></p>
+    <h3 class="subhead">Recommendation</h3>
+    <p class="recommendation" id="recommendationText">—</p>
+  </section>
+
+  <section class="panel critical-panel" id="criticalPanel" style="display:none;">
+    <div class="critical-banner">CRITICAL INCIDENT — <span id="criticalIncidentId">—</span></div>
+    <div class="critical-grid">
+      <div><span class="k">Temperature</span><span class="v" id="cTemp">—</span></div>
+      <div><span class="k">Vibration</span><span class="v" id="cVib">—</span></div>
+      <div><span class="k">Risk</span><span class="v" id="cRisk">—</span></div>
+      <div><span class="k">Condition</span><span class="v" id="cCond">—</span></div>
+      <div><span class="k">Sensor health</span><span class="v" id="cHealth">—</span></div>
+      <div><span class="k">Confidence</span><span class="v" id="cConf">—</span></div>
+      <div><span class="k">Trajectory</span><span class="v" id="cTraj">—</span></div>
+      <div><span class="k">Recovery</span><span class="v" id="cRecovery">—</span></div>
+    </div>
+    <p class="reason" id="cReason">—</p>
+    <div class="status-row">
+      <span class="statuschip" id="telegramStatus">Telegram —</span>
+      <span class="statuschip" id="voiceStatus">Voice —</span>
+      <span class="statuschip" id="callStatus">Call —</span>
+      <span class="statuschip" id="ackStatus">Not acknowledged</span>
+    </div>
+    <div class="btn-row">
+      <button class="btn" id="ackBtn">Acknowledge alert</button>
+      <button class="btn ghost" id="summaryBtn">Generate AI incident summary</button>
+      <button class="btn ghost" id="replayBtn">Replay incident</button>
+    </div>
+  </section>
+
+  <section class="panel" id="demoPanel">
+    <h2>Demo control panel <span class="tag">DEMO MODE ONLY</span></h2>
+    <div class="demo-grid">
+      <button class="demo-btn" data-cmd="normal">Normal</button>
+      <button class="demo-btn" data-cmd="low">Low temp</button>
+      <button class="demo-btn" data-cmd="high">High temp</button>
+      <button class="demo-btn" data-cmd="warning">Warning</button>
+      <button class="demo-btn danger" data-cmd="danger">Danger</button>
+      <button class="demo-btn" data-cmd="vibration">Vibration</button>
+      <button class="demo-btn" data-cmd="novibration">No vibration</button>
+      <button class="demo-btn" data-cmd="sensorfault">Sensor fault</button>
+      <button class="demo-btn" data-cmd="recovery">Recovery</button>
+      <button class="demo-btn" data-cmd="reset">Reset</button>
+    </div>
+    <h3 class="subhead">Scenarios</h3>
+    <div class="demo-grid">
+      <button class="demo-btn" data-cmd="scenario1">1 · Normal</button>
+      <button class="demo-btn" data-cmd="scenario2">2 · Gradual rise</button>
+      <button class="demo-btn" data-cmd="scenario3">3 · Sudden excursion</button>
+      <button class="demo-btn" data-cmd="scenario4">4 · Repeated vibration</button>
+      <button class="demo-btn" data-cmd="scenario5">5 · Combined event</button>
+      <button class="demo-btn" data-cmd="scenario6">6 · Sensor failure</button>
+      <button class="demo-btn" data-cmd="scenario7">7 · Critical→recovery</button>
+      <button class="demo-btn" data-cmd="scenario8">8 · Wi-Fi interruption</button>
+    </div>
+    <h3 class="subhead">Testing</h3>
+    <div class="demo-grid">
+      <button class="demo-btn" id="testTelegramBtn">Test Telegram</button>
+      <button class="demo-btn" id="testCallBtn">Test call</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Voice assistant</h2>
+    <p class="muted">Ask about the current condition — answers use live data from the active mode.</p>
+    <div class="btn-row">
+      <button class="btn" id="voiceAskBtn">🎙 Ask a question</button>
+      <button class="btn ghost" id="voiceMuteBtn">Mute spoken alerts</button>
+    </div>
+    <p class="assistant-answer" id="assistantAnswer"></p>
+  </section>
+
+  <section class="panel">
+    <h2>Incident history</h2>
+    <div id="incidentList" class="incident-list"></div>
+    <div id="incidentDetail" class="incident-detail"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Audit trail</h2>
+    <div id="auditLog" class="audit-log"></div>
+  </section>
+
+</main>
+
+<footer class="disclaimer">
+  Automated calls are intended for a configured responsible operator. This prototype must not be treated as a
+  substitute for validated emergency, pharmaceutical, or medical procedures.
+</footer>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
