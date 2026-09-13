@@ -5,9 +5,7 @@
     "min": 2.0,
     "max": 8.0,
     "warnLow": 2.8,
-    "warnHigh": 7.2,
-    "vibWarn": 3,
-    "vibBreach": 8
+    "warnHigh": 7.2
   },
   "samplingIntervalMs": 5000,
   "cooldownMs": 15000
