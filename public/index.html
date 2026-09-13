@@ -1,131 +1,522 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>VAXGUARD PRO — Industry Cold-Chain Guardian</title>
-  <link rel="stylesheet" href="style.css">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>VaxGuard X — Cold-Chain Intelligence</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/css/style.css" />
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 </head>
-<body>
-  <div class="app-container">
-    <header class="app-header">
-      <div class="brand">
-        <h1>VAXGUARD <span class="badge">PRO v4.0</span></h1>
-        <p id="locationLabel">Pharmacy Main Storage Unit A</p>
+<body class="theme-dark">
+  <div id="app">
+    <!-- SIDEBAR -->
+    <aside id="sidebar" class="sidebar">
+      <div class="sidebar-brand">
+        <div class="logo-mark">VX</div>
+        <div class="brand-text">
+          <span class="brand-name">VaxGuard X</span>
+          <span class="brand-sub">Cold-Chain Intelligence</span>
+        </div>
       </div>
-      <div class="header-status">
-        <span id="modeBadge" class="status-badge real">LIVE</span>
-        <span id="stateBadge" class="status-badge safe">NORMAL</span>
+      <nav class="sidebar-nav">
+        <button class="nav-item active" data-view="command"><span class="nav-icon">◈</span> Command Center</button>
+        <button class="nav-item" data-view="live"><span class="nav-icon">◎</span> Live Monitor</button>
+        <button class="nav-item" data-view="risk"><span class="nav-icon">⚠</span> AI Risk Center</button>
+        <button class="nav-item" data-view="early"><span class="nav-icon">↗</span> Early Warning</button>
+        <button class="nav-item" data-view="voice"><span class="nav-icon">🎙</span> AI Voice Assistant</button>
+        <button class="nav-item" data-view="voicealerts"><span class="nav-icon">📢</span> Voice Alerts</button>
+        <button class="nav-item" data-view="alerts"><span class="nav-icon">🔔</span> Alerts Center</button>
+        <button class="nav-item" data-view="emergency"><span class="nav-icon">🚨</span> Emergency</button>
+        <button class="nav-item" data-view="telegram"><span class="nav-icon">✈</span> Telegram</button>
+        <button class="nav-item" data-view="incidents"><span class="nav-icon">📋</span> Incidents</button>
+        <button class="nav-item" data-view="timeline"><span class="nav-icon">⏱</span> Timeline</button>
+        <button class="nav-item" data-view="audit"><span class="nav-icon">📜</span> Audit Trail</button>
+        <button class="nav-item" data-view="sensors"><span class="nav-icon">📡</span> Sensor Health</button>
+        <button class="nav-item" data-view="device"><span class="nav-icon">🖥</span> Device Health</button>
+        <button class="nav-item" data-view="twin"><span class="nav-icon">⬡</span> Digital Twin</button>
+        <button class="nav-item" data-view="analytics"><span class="nav-icon">📊</span> Analytics</button>
+        <button class="nav-item" data-view="reports"><span class="nav-icon">📑</span> Reports</button>
+        <button class="nav-item" data-view="download"><span class="nav-icon">⬇</span> Downloads</button>
+        <button class="nav-item" data-view="demo"><span class="nav-icon">▶</span> Demo Simulator</button>
+        <button class="nav-item" data-view="selftest"><span class="nav-icon">✓</span> Self-Test</button>
+        <button class="nav-item" data-view="settings"><span class="nav-icon">⚙</span> Settings</button>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="conn-status" id="connStatus">
+          <span class="dot"></span>
+          <span class="label">Connecting…</span>
+        </div>
       </div>
-    </header>
+    </aside>
 
-    <nav class="nav-tabs">
-      <button class="tab-btn active" onclick="switchScreen('overview', event)">Overview</button>
-      <button class="tab-btn" onclick="switchScreen('live', event)">Live Monitor</button>
-      <button class="tab-btn" onclick="switchScreen('ai', event)">AI Intelligence</button>
-      <button class="tab-btn" onclick="switchScreen('graph', event)">Graphs</button>
-      <button class="tab-btn" onclick="switchScreen('vibration', event)">Vibration</button>
-      <button class="tab-btn" onclick="switchScreen('alerts', event)">Alerts</button>
-      <button class="tab-btn" onclick="switchScreen('assistant', event)">Voice Assistant</button>
-      <button class="tab-btn" onclick="switchScreen('audit', event)">Audit Trail</button>
-      <button class="tab-btn" onclick="switchScreen('reports', event)">Reports</button>
-    </nav>
-
-    <main class="main-content">
-      <!-- OVERVIEW -->
-      <section id="screen-overview" class="screen active">
-        <div class="grid-dashboard">
-          <div class="card"><span class="card-label">Temperature</span><div id="valTemp" class="card-value">-- °C</div></div>
-          <div class="card"><span class="card-label">Humidity</span><div id="valHum" class="card-value">-- %</div></div>
-          <div class="card"><span class="card-label">Vibration Status</span><div id="valVib" class="card-value">Normal</div></div>
-          <div class="card"><span class="card-label">Risk Score</span><div id="valRisk" class="card-value">10/100</div></div>
-          <div class="card full-width">
-            <span class="card-label">AI Guardian Advisory</span>
-            <div id="valAdvisory" class="advisory-text">Connecting to telemetry pipeline...</div>
+    <!-- MAIN -->
+    <div class="main">
+      <!-- TOP BAR -->
+      <header class="topbar">
+        <div class="topbar-left">
+          <button id="menuToggle" class="icon-btn mobile-only">☰</button>
+          <div class="device-selector">
+            <span class="device-id" id="deviceId">VaxGuard-01</span>
+            <span class="mode-badge" id="modeBadge">LIVE</span>
+          </div>
+          <div class="live-indicator" id="liveIndicator">
+            <span class="pulse"></span>
+            <span>LIVE</span>
           </div>
         </div>
-      </section>
-
-      <!-- LIVE MONITOR -->
-      <section id="screen-live" class="screen">
-        <div class="card full-width">
-          <h3>Real-Time Hardware Telemetry</h3>
-          <p class="insight-p">Monitoring ESP32 physical inputs directly from DHT11 and SW-420.</p>
-        </div>
-      </section>
-
-      <!-- AI INTELLIGENCE -->
-      <section id="screen-ai" class="screen">
-        <div class="card full-width">
-          <h3>Explainable AI Analytical Engine</h3>
-          <div class="insight-grid">
-            <div><strong>Trend Analysis:</strong> <span id="aiTrend">STABLE</span></div>
-            <div><strong>Predicted Risk:</strong> <span id="aiPredRisk">Low</span></div>
-            <div><strong>Potency Index:</strong> <span id="aiPotency">99.8%</span></div>
+        <div class="topbar-center">
+          <div class="search-box">
+            <input type="text" id="globalSearch" placeholder="Search events, incidents, IDs…" />
           </div>
         </div>
-      </section>
-
-      <!-- GRAPH -->
-      <section id="screen-graph" class="screen">
-        <div class="card full-width">
-          <h3>High-Resolution Temperature History</h3>
-          <div class="chart-container"><canvas id="tempChart"></canvas></div>
+        <div class="topbar-right">
+          <button class="icon-btn" id="cmdPaletteBtn" title="Command Palette (Ctrl+K)">⌘K</button>
+          <button class="icon-btn" id="notifBtn" title="Notifications">
+            🔔 <span class="badge" id="notifBadge" hidden>0</span>
+          </button>
+          <button class="icon-btn" id="voiceQuickBtn" title="Voice Assistant">🎙</button>
+          <button class="icon-btn" id="themeToggle" title="Toggle theme">☀</button>
         </div>
-      </section>
+      </header>
 
-      <!-- VIBRATION -->
-      <section id="screen-vibration" class="screen">
-        <div class="card full-width">
-          <h3>Vibration & Shock Intelligence (SW-420)</h3>
-          <p id="vibLog" class="insight-p">No mechanical impacts registered.</p>
-        </div>
-      </section>
-
-      <!-- ALERTS -->
-      <section id="screen-alerts" class="screen">
-        <div class="card full-width">
-          <h3>Active Excursion Alerts</h3>
-          <div id="alertList" class="scroll-list">No alerts recorded.</div>
-        </div>
-      </section>
-
-      <!-- ASSISTANT -->
-      <section id="screen-assistant" class="screen">
-        <div class="card full-width">
-          <h3>Conversational AI Voice Assistant</h3>
-          <div id="chatHistory" class="chat-box"></div>
-          <div class="chat-input-row">
-            <input type="text" id="chatInput" placeholder="Ask e.g. What is the temperature?">
-            <button class="btn" onclick="sendChatMessage()">Send</button>
-            <button class="btn btn-alt" onclick="startVoiceRecognition()">🎙️ Speak</button>
+      <!-- VIEWS -->
+      <main id="views" class="views">
+        <!-- 01 COMMAND CENTER -->
+        <section class="view active" id="view-command">
+          <div class="view-header">
+            <h1>Command Center</h1>
+            <p class="subtitle">Real-time cold-chain situational awareness</p>
           </div>
-        </div>
-      </section>
-
-      <!-- AUDIT -->
-      <section id="screen-audit" class="screen">
-        <div class="card full-width">
-          <h3>FDA 21 CFR Compliant Audit Log</h3>
-          <div style="overflow-x:auto;">
-            <table class="audit-table">
-              <thead><tr><th>Timestamp</th><th>Temp (°C)</th><th>Hum (%)</th><th>Vib</th><th>State</th><th>Risk</th><th>Mode</th></tr></thead>
-              <tbody id="auditTableBody"><tr><td colspan="7" style="text-align:center;">Loading audit trail...</td></tr></tbody>
-            </table>
+          <div class="grid-command">
+            <div class="panel status-hero" id="conditionPanel">
+              <div class="hero-label">CONDITION</div>
+              <div class="hero-value" id="conditionValue">—</div>
+              <div class="hero-sub" id="conditionSub">Awaiting data</div>
+            </div>
+            <div class="panel metric">
+              <div class="metric-label">TEMPERATURE</div>
+              <div class="metric-value" id="tempValue">—</div>
+              <div class="metric-unit">°C</div>
+              <div class="metric-range">Range: <span id="tempRange">2.0 – 8.0</span></div>
+            </div>
+            <div class="panel metric">
+              <div class="metric-label">HUMIDITY</div>
+              <div class="metric-value" id="humValue">—</div>
+              <div class="metric-unit">%</div>
+            </div>
+            <div class="panel metric">
+              <div class="metric-label">VIBRATION</div>
+              <div class="metric-value sm" id="vibValue">IDLE</div>
+            </div>
+            <div class="panel metric risk-panel">
+              <div class="metric-label">RISK SCORE</div>
+              <div class="risk-gauge">
+                <svg viewBox="0 0 120 70" class="gauge-svg">
+                  <path class="gauge-bg" d="M10 60 A50 50 0 0 1 110 60" fill="none" stroke-width="10"/>
+                  <path id="gaugeArc" class="gauge-fill" d="M10 60 A50 50 0 0 1 110 60" fill="none" stroke-width="10" stroke-dasharray="0 158"/>
+                </svg>
+                <div class="gauge-value" id="riskValue">0</div>
+              </div>
+              <div class="risk-level" id="riskLevel">GOOD</div>
+            </div>
+            <div class="panel">
+              <div class="panel-title">SENSOR HEALTH</div>
+              <div class="health-bar"><div class="health-fill" id="sensorHealthBar" style="width:100%"></div></div>
+              <div class="health-text" id="sensorHealthText">—</div>
+            </div>
+            <div class="panel">
+              <div class="panel-title">DEVICE STATUS</div>
+              <div class="kv"><span>Online</span><span id="devOnline">—</span></div>
+              <div class="kv"><span>Last seen</span><span id="devLastSeen">—</span></div>
+              <div class="kv"><span>Uptime</span><span id="devUptime">—</span></div>
+            </div>
+            <div class="panel">
+              <div class="panel-title">CURRENT ADVISORY</div>
+              <p class="advisory" id="advisoryText">System initializing. Waiting for sensor telemetry.</p>
+            </div>
+            <div class="panel wide">
+              <div class="panel-title">LIVE TEMPERATURE</div>
+              <canvas id="cmdTempChart" height="120"></canvas>
+            </div>
+            <div class="panel">
+              <div class="panel-title">LAST EVENT</div>
+              <div id="lastEvent">No events yet</div>
+            </div>
+            <div class="panel">
+              <div class="panel-title">DATA FRESHNESS</div>
+              <div id="dataFreshness">—</div>
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
 
-      <!-- REPORTS -->
-      <section id="screen-reports" class="screen">
-        <div class="card full-width">
-          <h3>Compliance Report Center</h3>
-          <button class="btn" onclick="location.href='/api/export/csv'">📄 Download CSV Audit Report</button>
-        </div>
-      </section>
-    </main>
+        <!-- 02 LIVE MONITOR -->
+        <section class="view" id="view-live">
+          <div class="view-header"><h1>Live Monitor</h1><p class="subtitle">Streaming sensor telemetry</p></div>
+          <div class="grid-2">
+            <div class="panel">
+              <div class="panel-title">Temperature Stream</div>
+              <canvas id="liveTempChart" height="180"></canvas>
+            </div>
+            <div class="panel">
+              <div class="panel-title">Humidity Stream</div>
+              <canvas id="liveHumChart" height="180"></canvas>
+            </div>
+          </div>
+          <div class="panel mt">
+            <div class="panel-title">Recent Readings</div>
+            <div class="table-wrap">
+              <table class="data-table" id="liveTable">
+                <thead><tr><th>Time</th><th>Temp °C</th><th>Humidity %</th><th>Vibration</th><th>Mode</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- 06 AI RISK CENTER -->
+        <section class="view" id="view-risk">
+          <div class="view-header"><h1>AI Risk Center</h1><p class="subtitle">Explainable risk intelligence</p></div>
+          <div class="grid-2">
+            <div class="panel">
+              <div class="big-risk" id="bigRiskScore">0</div>
+              <div class="big-risk-level" id="bigRiskLevel">GOOD</div>
+              <div class="risk-trend" id="riskTrend">Trend: STABLE</div>
+            </div>
+            <div class="panel">
+              <div class="panel-title">WHY THIS SCORE?</div>
+              <ul class="factor-list" id="riskFactors">
+                <li class="muted">No active risk factors</li>
+              </ul>
+            </div>
+          </div>
+          <div class="panel mt">
+            <div class="panel-title">Risk Over Time</div>
+            <canvas id="riskChart" height="140"></canvas>
+          </div>
+          <div class="panel mt">
+            <div class="panel-title">Recommended Action</div>
+            <p id="riskAction">Continue normal monitoring.</p>
+          </div>
+        </section>
+
+        <!-- 07 EARLY WARNING -->
+        <section class="view" id="view-early">
+          <div class="view-header"><h1>Early Warning</h1><p class="subtitle">Trend-based predictive advisory</p></div>
+          <div class="grid-2">
+            <div class="panel">
+              <div class="panel-title">TREND DIRECTION</div>
+              <div class="big-text" id="predDirection">STABLE</div>
+              <div class="conf-badge" id="predConfidence">LOW</div>
+            </div>
+            <div class="panel">
+              <div class="panel-title">PREDICTION</div>
+              <p id="predReason">Collecting baseline data…</p>
+              <div id="predCrossing" class="mt-sm"></div>
+            </div>
+          </div>
+          <div class="panel mt">
+            <div class="panel-title">Advisory</div>
+            <p id="earlyAdvisory">Insufficient data for early-warning projection.</p>
+          </div>
+        </section>
+
+        <!-- 09 AI VOICE ASSISTANT -->
+        <section class="view" id="view-voice">
+          <div class="view-header"><h1>AI Voice Assistant</h1><p class="subtitle">Conversational intelligence over live telemetry</p></div>
+          <div class="voice-center">
+            <div class="voice-status" id="voiceStatus">IDLE</div>
+            <button class="mic-btn" id="micBtn" title="Hold or click to speak">
+              <span class="mic-icon">🎙</span>
+            </button>
+            <div class="waveform" id="waveform"></div>
+            <div class="transcript" id="transcript">Click the microphone and ask a question…</div>
+            <div class="ai-response" id="aiResponse"></div>
+            <div class="voice-controls">
+              <label><input type="checkbox" id="speakResponse" checked /> Speak responses</label>
+              <button class="btn sm" id="clearConv">Clear</button>
+            </div>
+            <div class="suggested">
+              <button class="chip" data-q="What is the current temperature?">Temperature?</button>
+              <button class="chip" data-q="Is the cold chain safe?">Safe?</button>
+              <button class="chip" data-q="What is the current risk score?">Risk score?</button>
+              <button class="chip" data-q="Why is the risk elevated?">Why risk?</button>
+              <button class="chip" data-q="Was vibration detected?">Vibration?</button>
+              <button class="chip" data-q="Summarize current status">Summary</button>
+            </div>
+            <div class="conv-history" id="convHistory"></div>
+          </div>
+        </section>
+
+        <!-- 10 VOICE ALERT CENTER -->
+        <section class="view" id="view-voicealerts">
+          <div class="view-header"><h1>Autonomous Voice Alert Engine</h1><p class="subtitle">Separate from the conversational assistant</p></div>
+          <div class="panel">
+            <div class="kv"><span>Voice Alerts</span>
+              <label class="switch"><input type="checkbox" id="voiceAlertToggle" checked /><span class="slider"></span></label>
+            </div>
+            <div class="kv"><span>Status</span><span id="voiceAlertStatus">Ready (requires user gesture for browser audio)</span></div>
+            <div class="kv"><span>Cooldown</span>
+              <select id="voiceCooldown">
+                <option value="30">30 seconds</option>
+                <option value="60" selected>1 minute</option>
+                <option value="300">5 minutes</option>
+                <option value="600">10 minutes</option>
+              </select>
+            </div>
+            <div class="btn-row mt">
+              <button class="btn primary" id="enableVoiceAlerts">Enable Voice Alerts</button>
+              <button class="btn" id="testVoiceAlert">Test Voice Alert</button>
+            </div>
+            <p class="hint mt">Browsers block autoplay speech until you interact with the page. Click “Enable Voice Alerts” once.</p>
+          </div>
+          <div class="panel mt">
+            <div class="panel-title">Recent Voice Alerts</div>
+            <ul id="voiceAlertLog" class="event-list"><li class="muted">None yet</li></ul>
+          </div>
+        </section>
+
+        <!-- 11 ALERTS -->
+        <section class="view" id="view-alerts">
+          <div class="view-header"><h1>Alerts Center</h1></div>
+          <div class="panel">
+            <div class="table-wrap">
+              <table class="data-table" id="alertsTable">
+                <thead><tr><th>Time</th><th>Severity</th><th>Title</th><th>Temp</th><th>Risk</th><th>Ack</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- 12 EMERGENCY -->
+        <section class="view" id="view-emergency">
+          <div class="view-header"><h1>Emergency Response</h1></div>
+          <div id="emergencyPanel" class="emergency-panel hidden">
+            <div class="em-severity" id="emSeverity">CRITICAL</div>
+            <div class="em-title" id="emTitle">—</div>
+            <div class="em-grid">
+              <div>Temperature <strong id="emTemp">—</strong></div>
+              <div>Humidity <strong id="emHum">—</strong></div>
+              <div>Risk <strong id="emRisk">—</strong></div>
+              <div>Duration <strong id="emDur">—</strong></div>
+            </div>
+            <p id="emAction">—</p>
+            <div class="btn-row">
+              <button class="btn danger" id="emAck">ACKNOWLEDGE</button>
+              <button class="btn" id="emMute">MUTE VOICE</button>
+            </div>
+          </div>
+          <div class="panel mt">
+            <div class="panel-title">Emergency Calling</div>
+            <p id="callStatus">Calling provider: NOT CONFIGURED</p>
+            <button class="btn" id="callContact" disabled>CALL CONTACT</button>
+            <p class="hint">Browser cannot place silent phone calls. Configure a backend calling provider if needed.</p>
+          </div>
+        </section>
+
+        <!-- 13 TELEGRAM -->
+        <section class="view" id="view-telegram">
+          <div class="view-header"><h1>Telegram Emergency Center</h1></div>
+          <div class="panel">
+            <div class="kv"><span>Configured</span><span id="tgConfigured">—</span></div>
+            <div class="kv"><span>Enabled</span>
+              <label class="switch"><input type="checkbox" id="tgToggle" checked /><span class="slider"></span></label>
+            </div>
+            <button class="btn primary mt" id="tgTest">Send Test Message</button>
+            <p class="hint mt">Bot token and chat ID must be set in server .env (never in frontend).</p>
+          </div>
+        </section>
+
+        <!-- 14 INCIDENTS -->
+        <section class="view" id="view-incidents">
+          <div class="view-header"><h1>Incident Management</h1></div>
+          <div class="panel">
+            <div class="table-wrap">
+              <table class="data-table" id="incidentsTable">
+                <thead><tr><th>ID</th><th>Trigger</th><th>Severity</th><th>Status</th><th>Peak °C</th><th>Started</th><th></th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- 15 TIMELINE -->
+        <section class="view" id="view-timeline">
+          <div class="view-header"><h1>Incident Timeline</h1></div>
+          <div class="panel">
+            <ul class="timeline" id="timelineList"><li class="muted">No incident timeline data</li></ul>
+          </div>
+        </section>
+
+        <!-- 16 AUDIT -->
+        <section class="view" id="view-audit">
+          <div class="view-header"><h1>Audit Trail</h1><p class="subtitle">Append-only event log</p></div>
+          <div class="panel">
+            <div class="table-wrap">
+              <table class="data-table" id="auditTable">
+                <thead><tr><th>Time</th><th>Event</th><th>Details</th><th>ID</th></tr></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- 17 SENSOR HEALTH -->
+        <section class="view" id="view-sensors">
+          <div class="view-header"><h1>Sensor Health</h1></div>
+          <div class="grid-2">
+            <div class="panel">
+              <div class="panel-title">DHT11</div>
+              <div class="kv"><span>Status</span><span id="dhtStatus">—</span></div>
+              <div class="kv"><span>Last valid</span><span id="dhtLast">—</span></div>
+            </div>
+            <div class="panel">
+              <div class="panel-title">SW-420 Vibration</div>
+              <div class="kv"><span>Status</span><span id="vibStatus">—</span></div>
+              <div class="kv"><span>Events (session)</span><span id="vibCount">0</span></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 18 DEVICE HEALTH -->
+        <section class="view" id="view-device">
+          <div class="view-header"><h1>Device Health</h1></div>
+          <div class="panel">
+            <div class="kv"><span>Device ID</span><span id="dhId">—</span></div>
+            <div class="kv"><span>Online</span><span id="dhOnline">—</span></div>
+            <div class="kv"><span>Mode</span><span id="dhMode">—</span></div>
+            <div class="kv"><span>Firmware</span><span id="dhFw">—</span></div>
+            <div class="kv"><span>Uptime</span><span id="dhUptime">—</span></div>
+            <div class="kv"><span>Wi-Fi RSSI</span><span id="dhRssi">—</span></div>
+            <div class="kv"><span>Free Heap</span><span id="dhHeap">—</span></div>
+            <div class="kv"><span>Last Seen</span><span id="dhLast">—</span></div>
+          </div>
+        </section>
+
+        <!-- 28 DIGITAL TWIN -->
+        <section class="view" id="view-twin">
+          <div class="view-header"><h1>Device Digital Twin</h1></div>
+          <div class="twin-grid">
+            <div class="twin-node" id="twinEsp"><div class="tn-label">ESP32</div><div class="tn-state" id="twinEspState">—</div></div>
+            <div class="twin-node" id="twinDht"><div class="tn-label">DHT11</div><div class="tn-state" id="twinDhtState">—</div></div>
+            <div class="twin-node" id="twinVib"><div class="tn-label">SW-420</div><div class="tn-state" id="twinVibState">—</div></div>
+            <div class="twin-node" id="twinGreen"><div class="tn-label">Green LED</div><div class="tn-state" id="twinGreenState">—</div></div>
+            <div class="twin-node" id="twinRed"><div class="tn-label">Red LED</div><div class="tn-state" id="twinRedState">—</div></div>
+          </div>
+        </section>
+
+        <!-- 21 ANALYTICS -->
+        <section class="view" id="view-analytics">
+          <div class="view-header"><h1>Analytics</h1></div>
+          <div class="grid-2">
+            <div class="panel"><div class="panel-title">Session Stats</div>
+              <div class="kv"><span>Total readings</span><span id="statReadings">0</span></div>
+              <div class="kv"><span>Vibration events</span><span id="statVib">0</span></div>
+              <div class="kv"><span>Max temp</span><span id="statMax">—</span></div>
+              <div class="kv"><span>Min temp</span><span id="statMin">—</span></div>
+            </div>
+            <div class="panel"><div class="panel-title">Risk Distribution</div>
+              <canvas id="analyticsChart" height="160"></canvas>
+            </div>
+          </div>
+        </section>
+
+        <!-- 22 REPORTS -->
+        <section class="view" id="view-reports">
+          <div class="view-header"><h1>Reports</h1></div>
+          <div class="panel">
+            <p>Generate monitoring summaries from current session data.</p>
+            <div class="btn-row mt">
+              <button class="btn" id="genDaily">Daily Summary</button>
+              <button class="btn" id="genIncident">Incident Summary</button>
+            </div>
+            <pre class="report-out" id="reportOut"></pre>
+          </div>
+        </section>
+
+        <!-- 23 DOWNLOADS -->
+        <section class="view" id="view-download">
+          <div class="view-header"><h1>Download Center</h1></div>
+          <div class="panel">
+            <div class="btn-row">
+              <a class="btn" href="/api/export/csv" download>History CSV</a>
+              <a class="btn" href="/api/export/history" download>History JSON</a>
+              <a class="btn" href="/api/export/alerts" download>Alerts JSON</a>
+              <a class="btn" href="/api/export/audit" download>Audit JSON</a>
+            </div>
+          </div>
+        </section>
+
+        <!-- 27 DEMO -->
+        <section class="view" id="view-demo">
+          <div class="view-header"><h1>Demo Simulator</h1><p class="subtitle">Presentation mode — clearly marked DEMO</p></div>
+          <div class="panel">
+            <p>Use these controls to inject simulated states when hardware is unavailable, or use ESP32 serial commands for authentic demo.</p>
+            <div class="btn-row mt">
+              <button class="btn" data-demo="NORMAL">NORMAL</button>
+              <button class="btn" data-demo="LOW">LOW</button>
+              <button class="btn" data-demo="HIGH">HIGH</button>
+              <button class="btn danger" data-demo="CRITICAL">CRITICAL</button>
+              <button class="btn" data-demo="VIBRATION">VIBRATION</button>
+            </div>
+            <p class="hint mt">ESP32 serial: NORMAL | LOW | HIGH | CRITICAL | VIBRATION | LIVE | DEMO | STATUS | HELP</p>
+          </div>
+        </section>
+
+        <!-- 26 SELFTEST -->
+        <section class="view" id="view-selftest">
+          <div class="view-header"><h1>Self-Test</h1></div>
+          <div class="panel">
+            <button class="btn primary" id="runSelfTest">Run System Self-Test</button>
+            <pre class="report-out mt" id="selfTestOut"></pre>
+          </div>
+        </section>
+
+        <!-- 30 SETTINGS -->
+        <section class="view" id="view-settings">
+          <div class="view-header"><h1>Settings</h1></div>
+          <div class="panel">
+            <div class="form-row">
+              <label>Temp Min (°C)</label>
+              <input type="number" id="setTempMin" step="0.1" value="2.0" />
+            </div>
+            <div class="form-row">
+              <label>Temp Max (°C)</label>
+              <input type="number" id="setTempMax" step="0.1" value="8.0" />
+            </div>
+            <div class="form-row">
+              <label>Alert Cooldown (sec)</label>
+              <input type="number" id="setCooldown" value="60" />
+            </div>
+            <button class="btn primary mt" id="saveSettings">Save Settings</button>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <!-- NOTIFICATION DRAWER -->
+    <div id="notifDrawer" class="drawer hidden">
+      <div class="drawer-header">
+        <h3>Notifications</h3>
+        <button class="icon-btn" id="closeNotif">✕</button>
+      </div>
+      <ul id="notifList" class="event-list"></ul>
+    </div>
+
+    <!-- COMMAND PALETTE -->
+    <div id="cmdPalette" class="palette hidden">
+      <input type="text" id="cmdInput" placeholder="Type a command…" />
+      <ul id="cmdResults"></ul>
+    </div>
+
+    <!-- TOAST -->
+    <div id="toasts"></div>
   </div>
-  <script src="app.js"></script>
+
+  <script src="/js/app.js"></script>
 </body>
 </html>
