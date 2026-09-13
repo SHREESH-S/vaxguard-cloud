@@ -1,10 +1,9 @@
 /* =========================================================================
-   VAXGUARD PRO — Frontend Web Client & WebSocket Controller
+   VAXGUARD PRO v4.0 — Frontend Controller & WebSocket Client
    ========================================================================= */
 
 let ws;
 let tempChart = null;
-let voiceEnabled = false;
 
 function switchScreen(screenId, event) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
@@ -25,7 +24,7 @@ function initWebSocket() {
       const data = JSON.parse(event.data);
       updateDashboard(data);
     } catch (e) {
-      console.error("Failed to parse WebSocket message:", e);
+      console.error("WS Parse error:", e);
     }
   };
 
@@ -41,22 +40,27 @@ function updateDashboard(data) {
   document.getElementById('valVib').innerText = data.vibration ? "⚠️ DETECTED" : "Normal";
   document.getElementById('valState').innerText = data.state;
   document.getElementById('valRisk').innerText = data.riskScore + "/100";
-  document.getElementById('valCondition').innerText = data.conditionScore + "/100";
-  document.getElementById('valHealth').innerText = data.sensorHealth + "%";
+  document.getElementById('valPotency').innerText = data.potencyRetention + "%";
+  document.getElementById('valComp').innerText = data.compressorHealth + "%";
   document.getElementById('valConfidence').innerText = data.dataConfidence + "%";
   document.getElementById('valAdvisory').innerText = data.advisoryMsg;
 
-  // Mode badge
+  document.getElementById('vibRealState').innerText = data.vibration ? "⚠️ SHOCK DETECTED" : "Normal";
+  document.getElementById('vibLog').innerText = data.vibration ? "Mechanical shock pulse registered via SW-420 sensor." : "Stable mechanical profile.";
+
+  document.getElementById('aiTrend').innerText = data.trend;
+  document.getElementById('aiPredRisk').innerText = data.predictedRisk + "/100";
+  document.getElementById('aiAnomaly').innerText = data.anomalyScore + "/100";
+  document.getElementById('aiCorrelation').innerText = data.correlationMsg;
+
   const modeBadge = document.getElementById('modeBadge');
   modeBadge.innerText = data.mode + " MODE";
   modeBadge.className = "status-badge " + (data.mode === 'REAL' ? 'real' : 'demo');
 
-  // State badge
   const stateBadge = document.getElementById('stateBadge');
   stateBadge.innerText = data.state;
   stateBadge.className = "status-badge " + (data.state === 'SAFE' ? 'safe' : (data.state === 'WARNING' ? 'warn' : 'crit'));
 
-  // Emergency banner
   const banner = document.getElementById('emergencyBanner');
   if (data.state === 'CRITICAL' || data.state === 'SENSOR_FAULT') {
     banner.classList.remove('hidden');
@@ -66,27 +70,13 @@ function updateDashboard(data) {
     banner.classList.add('hidden');
   }
 
-  // AI Insights
-  document.getElementById('insightExplanation').innerText = data.advisoryMsg;
-  document.getElementById('insightTrend').innerText = data.trend;
-  document.getElementById('insightPredRisk').innerText = data.predictedRisk + "/100";
-  document.getElementById('insightAnomaly').innerText = data.anomalyScore + "/100";
-  document.getElementById('insightCorrelation').innerText = data.correlationMsg;
-
-  // System Health
-  document.getElementById('healthDht').innerText = data.sensorFault ? "FAIL" : "OK";
-  document.getElementById('healthWifi').innerText = data.wifiOk ? "Connected" : "Disconnected";
-  document.getElementById('healthUptime').innerText = data.uptimeSec + "s";
-
-  // Fetch History & Audit updates
   fetchHistoryAndAudit();
 }
 
 function speakAlert(text) {
   if (!('speechSynthesis' in window)) return;
-  // Cooldown check to prevent voice spam
   const now = Date.now();
-  if (window.lastSpoken && now - window.lastSpoken < 20000) return;
+  if (window.lastSpoken && now - window.lastSpoken < 25000) return;
   window.lastSpoken = now;
   const utter = new SpeechSynthesisUtterance(text);
   speechSynthesis.speak(utter);
@@ -101,8 +91,8 @@ function initChart() {
       datasets: [{
         label: 'Temperature (°C)',
         data: [],
-        borderColor: '#38bdf8',
-        backgroundColor: 'rgba(56, 189, 248, 0.1)',
+        borderColor: '#0ea5e9',
+        backgroundColor: 'rgba(14, 165, 233, 0.1)',
         fill: true,
         tension: 0.3
       }]
@@ -111,7 +101,7 @@ function initChart() {
       responsive: true,
       maintainAspectRatio: false,
       scales: {
-        y: { grid: { color: '#334155' }, ticks: { color: '#94a3b8' } },
+        y: { grid: { color: '#1e293b' }, ticks: { color: '#94a3b8' } },
         x: { grid: { display: false }, ticks: { color: '#94a3b8' } }
       }
     }
@@ -139,20 +129,20 @@ async function fetchHistoryAndAudit() {
     const alertRes = await fetch('/api/alerts');
     const alertJson = await alertRes.json();
     if (alertJson.ok && alertJson.alerts.length > 0) {
-      document.getElementById('alertCenterList').innerHTML = alertJson.alerts.map(a =>
+      document.getElementById('alertList').innerHTML = alertJson.alerts.map(a =>
         `<div>[${a.timestamp}] <strong>${a.priority}</strong>: ${a.message}</div>`
       ).join('');
     }
 
-    const incidentRes = await fetch('/api/incidents');
-    const incidentJson = await incidentRes.json();
-    if (incidentJson.ok && incidentJson.incidents.length > 0) {
-      document.getElementById('timelineList').innerHTML = incidentJson.incidents.map(i =>
-        `<div>[${i.timestamp}] <strong>${i.type}</strong> - ${i.description}</div>`
+    const auditRes = await fetch('/api/audit');
+    const auditJson = await auditRes.json();
+    if (auditJson.ok && auditJson.audit.length > 0) {
+      document.getElementById('auditTableBody').innerHTML = auditJson.audit.map(r =>
+        `<tr><td>${r.timestamp}</td><td>${r.temp.toFixed(1)}</td><td>${r.humidity.toFixed(1)}</td><td>${r.vibration ? 'Yes' : 'No'}</td><td>${r.state}</td><td>${r.risk}</td><td>${r.mode}</td></tr>`
       ).join('');
     }
   } catch (e) {
-    console.error("Failed to fetch history/audit:", e);
+    console.error("Fetch error:", e);
   }
 }
 
@@ -173,12 +163,12 @@ async function sendChatMessage() {
       body: JSON.stringify({ question: q })
     });
     const json = await res.json();
-    const answer = json.ok ? json.answer : "Sorry, I could not process your question.";
+    const answer = json.ok ? json.answer : "Assistant unavailable.";
     chatHistory.innerHTML += `<div class="chat-msg bot">${answer}</div>`;
     chatHistory.scrollTop = chatHistory.scrollHeight;
     speakAlert(answer);
   } catch (err) {
-    chatHistory.innerHTML += `<div class="chat-msg bot">Error connecting to assistant service.</div>`;
+    chatHistory.innerHTML += `<div class="chat-msg bot">Error reaching AI assistant.</div>`;
   }
 }
 
@@ -191,34 +181,10 @@ function startVoiceRecognition() {
   const recognition = new SpeechRecognition();
   recognition.lang = 'en-US';
   recognition.onresult = (event) => {
-    const speechToText = event.results[0][0].transcript;
-    document.getElementById('chatInput').value = speechToText;
+    document.getElementById('chatInput').value = event.results[0][0].transcript;
     sendChatMessage();
   };
   recognition.start();
-}
-
-async function testTelegramAlert() {
-  const res = await fetch('/api/alerts/test', { method: 'POST' });
-  const json = await res.json();
-  alert(json.ok ? "Test Telegram alert sent successfully!" : "Failed to send test alert.");
-}
-
-async function saveSettings() {
-  const locationLabel = document.getElementById('cfgLocation').value;
-  const max = parseFloat(document.getElementById('cfgMaxTemp').value);
-  const min = parseFloat(document.getElementById('cfgMinTemp').value);
-
-  const res = await fetch('/api/config', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ locationLabel, thresholds: { min, max, warnLow: min + 0.8, warnHigh: max - 0.8, vibWarn: 3, vibBreach: 8 } })
-  });
-  const json = await res.json();
-  if (json.ok) {
-    document.getElementById('saveMsg').innerText = "Configuration saved successfully!";
-    setTimeout(() => document.getElementById('saveMsg').innerText = "", 3000);
-  }
 }
 
 window.onload = () => {
