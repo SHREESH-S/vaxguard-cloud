@@ -1,380 +1,3187 @@
+```html
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>VaxGuard — Cold-Chain Guardian</title>
-<link rel="stylesheet" href="style.css" />
-<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.3/chart.umd.min.js"></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VaxGuard — Cold Chain Intelligence</title>
+
+<!-- Fonts -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+
+<style>
+:root{
+    --bg:#070b12;
+    --bg2:#0b111b;
+    --panel:rgba(15,23,36,.78);
+    --panel2:rgba(19,30,46,.72);
+    --border:rgba(255,255,255,.08);
+    --text:#edf6ff;
+    --muted:#7f91a8;
+    --cyan:#35d9ff;
+    --blue:#5287ff;
+    --green:#38e6a4;
+    --yellow:#ffd166;
+    --orange:#ff9f43;
+    --red:#ff5364;
+    --purple:#a879ff;
+    --shadow:0 18px 60px rgba(0,0,0,.35);
+    --radius:20px;
+}
+
+*{
+    box-sizing:border-box;
+    margin:0;
+    padding:0;
+}
+
+html{
+    scroll-behavior:smooth;
+}
+
+body{
+    min-height:100vh;
+    background:
+      radial-gradient(circle at 15% 10%,rgba(53,217,255,.07),transparent 28%),
+      radial-gradient(circle at 90% 20%,rgba(82,135,255,.08),transparent 30%),
+      linear-gradient(135deg,#05080e,#080e17 45%,#060a11);
+    color:var(--text);
+    font-family:Inter,Arial,sans-serif;
+    overflow-x:hidden;
+}
+
+/* =========================
+   APP SHELL
+========================= */
+
+.app{
+    display:flex;
+    min-height:100vh;
+}
+
+/* =========================
+   SIDEBAR
+========================= */
+
+.sidebar{
+    position:fixed;
+    left:0;
+    top:0;
+    bottom:0;
+    width:270px;
+    padding:22px 15px;
+    background:rgba(5,10,17,.92);
+    border-right:1px solid var(--border);
+    backdrop-filter:blur(25px);
+    z-index:1000;
+    overflow-y:auto;
+}
+
+.logo{
+    display:flex;
+    align-items:center;
+    gap:12px;
+    padding:7px 10px 25px;
+}
+
+.logo-mark{
+    width:42px;
+    height:42px;
+    border-radius:13px;
+    display:grid;
+    place-items:center;
+    background:
+      linear-gradient(135deg,rgba(53,217,255,.18),rgba(82,135,255,.12));
+    border:1px solid rgba(53,217,255,.25);
+    box-shadow:0 0 25px rgba(53,217,255,.12);
+    font-size:21px;
+}
+
+.logo h1{
+    font-family:"Space Grotesk";
+    font-size:21px;
+    letter-spacing:-.5px;
+}
+
+.logo span{
+    display:block;
+    color:var(--cyan);
+    font-size:9px;
+    font-weight:800;
+    letter-spacing:2px;
+    margin-top:2px;
+}
+
+.nav-section{
+    margin:18px 8px 8px;
+    color:#516278;
+    font-size:10px;
+    font-weight:800;
+    letter-spacing:1.8px;
+    text-transform:uppercase;
+}
+
+.nav{
+    display:flex;
+    flex-direction:column;
+    gap:4px;
+}
+
+.nav button{
+    border:0;
+    color:#8fa1b7;
+    background:transparent;
+    width:100%;
+    padding:11px 12px;
+    border-radius:12px;
+    display:flex;
+    align-items:center;
+    gap:12px;
+    cursor:pointer;
+    font-size:12px;
+    font-weight:600;
+    text-align:left;
+    transition:.2s;
+}
+
+.nav button:hover{
+    color:white;
+    background:rgba(255,255,255,.045);
+}
+
+.nav button.active{
+    color:white;
+    background:
+      linear-gradient(90deg,rgba(53,217,255,.12),rgba(53,217,255,.025));
+    border:1px solid rgba(53,217,255,.13);
+    box-shadow:inset 3px 0 var(--cyan);
+}
+
+.nav-icon{
+    width:20px;
+    text-align:center;
+    font-size:15px;
+}
+
+/* =========================
+   MAIN
+========================= */
+
+.main{
+    margin-left:270px;
+    width:calc(100% - 270px);
+    min-width:0;
+}
+
+/* =========================
+   TOPBAR
+========================= */
+
+.topbar{
+    position:sticky;
+    top:0;
+    z-index:500;
+    height:72px;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding:0 28px;
+    background:rgba(7,11,18,.72);
+    border-bottom:1px solid var(--border);
+    backdrop-filter:blur(22px);
+}
+
+.top-left{
+    display:flex;
+    align-items:center;
+    gap:12px;
+}
+
+.menu{
+    display:none;
+    border:0;
+    background:transparent;
+    color:white;
+    font-size:22px;
+    cursor:pointer;
+}
+
+.mode-badge{
+    padding:7px 12px;
+    border-radius:30px;
+    background:rgba(255,255,255,.045);
+    border:1px solid var(--border);
+    font-size:10px;
+    font-weight:800;
+    letter-spacing:1px;
+}
+
+.connection{
+    display:flex;
+    align-items:center;
+    gap:7px;
+    color:#8b9bb0;
+    font-size:11px;
+}
+
+.connection-dot{
+    width:7px;
+    height:7px;
+    border-radius:50%;
+    background:var(--yellow);
+    box-shadow:0 0 12px var(--yellow);
+}
+
+.top-actions{
+    display:flex;
+    align-items:center;
+    gap:9px;
+}
+
+.icon-btn{
+    position:relative;
+    width:38px;
+    height:38px;
+    border-radius:12px;
+    background:rgba(255,255,255,.045);
+    border:1px solid var(--border);
+    color:#c8d5e5;
+    cursor:pointer;
+}
+
+.notification-count{
+    position:absolute;
+    top:-4px;
+    right:-4px;
+    min-width:17px;
+    height:17px;
+    display:grid;
+    place-items:center;
+    padding:0 4px;
+    border-radius:20px;
+    background:var(--red);
+    color:white;
+    font-size:9px;
+    font-weight:800;
+}
+
+/* =========================
+   CONTENT
+========================= */
+
+.content{
+    padding:28px;
+    max-width:1700px;
+    margin:auto;
+}
+
+.screen{
+    display:none;
+    animation:fadeIn .25s ease;
+}
+
+.screen.active{
+    display:block;
+}
+
+@keyframes fadeIn{
+    from{
+        opacity:0;
+        transform:translateY(6px);
+    }
+    to{
+        opacity:1;
+        transform:none;
+    }
+}
+
+.page-heading{
+    display:flex;
+    align-items:flex-start;
+    justify-content:space-between;
+    margin-bottom:24px;
+}
+
+.page-heading h2{
+    font-family:"Space Grotesk";
+    font-size:27px;
+    letter-spacing:-1px;
+}
+
+.page-heading p{
+    color:var(--muted);
+    font-size:12px;
+    margin-top:7px;
+}
+
+.live-chip{
+    display:flex;
+    align-items:center;
+    gap:7px;
+    padding:8px 12px;
+    border-radius:30px;
+    color:var(--green);
+    border:1px solid rgba(56,230,164,.18);
+    background:rgba(56,230,164,.055);
+    font-size:10px;
+    font-weight:800;
+}
+
+.live-dot{
+    width:7px;
+    height:7px;
+    border-radius:50%;
+    background:var(--green);
+    box-shadow:0 0 12px var(--green);
+}
+
+/* =========================
+   CARDS
+========================= */
+
+.grid{
+    display:grid;
+    gap:16px;
+}
+
+.grid-6{
+    grid-template-columns:repeat(6,1fr);
+}
+
+.grid-4{
+    grid-template-columns:repeat(4,1fr);
+}
+
+.grid-3{
+    grid-template-columns:repeat(3,1fr);
+}
+
+.grid-2{
+    grid-template-columns:repeat(2,1fr);
+}
+
+.card{
+    position:relative;
+    overflow:hidden;
+    background:
+      linear-gradient(145deg,rgba(20,31,47,.8),rgba(9,16,26,.82));
+    border:1px solid var(--border);
+    border-radius:var(--radius);
+    padding:19px;
+    box-shadow:var(--shadow);
+    backdrop-filter:blur(20px);
+}
+
+.card::before{
+    content:"";
+    position:absolute;
+    width:120px;
+    height:120px;
+    top:-80px;
+    right:-50px;
+    background:rgba(53,217,255,.06);
+    border-radius:50%;
+    filter:blur(20px);
+}
+
+.card-label{
+    color:#788ba3;
+    font-size:10px;
+    text-transform:uppercase;
+    letter-spacing:1.4px;
+    font-weight:800;
+}
+
+.metric{
+    display:flex;
+    align-items:flex-end;
+    gap:5px;
+    margin-top:14px;
+}
+
+.metric-value{
+    font-family:"Space Grotesk";
+    font-size:31px;
+    font-weight:700;
+    letter-spacing:-1px;
+}
+
+.metric-unit{
+    color:#72849a;
+    font-size:11px;
+    margin-bottom:6px;
+}
+
+.metric-status{
+    margin-top:10px;
+    color:#8496aa;
+    font-size:10px;
+}
+
+/* =========================
+   SPECIAL METRIC COLORS
+========================= */
+
+.cyan .metric-value{color:var(--cyan);}
+.green .metric-value{color:var(--green);}
+.yellow .metric-value{color:var(--yellow);}
+.red .metric-value{color:var(--red);}
+.purple .metric-value{color:var(--purple);}
+
+/* =========================
+   HERO
+========================= */
+
+.hero{
+    position:relative;
+    min-height:190px;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding:30px;
+    overflow:hidden;
+    border-radius:26px;
+    margin-bottom:18px;
+    background:
+      radial-gradient(circle at 75% 40%,rgba(53,217,255,.13),transparent 28%),
+      linear-gradient(120deg,#0d1827,#08111d);
+    border:1px solid rgba(53,217,255,.13);
+}
+
+.hero::after{
+    content:"";
+    position:absolute;
+    width:350px;
+    height:350px;
+    right:-120px;
+    top:-120px;
+    border:1px solid rgba(53,217,255,.08);
+    border-radius:50%;
+    box-shadow:
+      0 0 0 40px rgba(53,217,255,.025),
+      0 0 0 80px rgba(53,217,255,.018);
+}
+
+.hero h3{
+    font-family:"Space Grotesk";
+    font-size:34px;
+    max-width:650px;
+    line-height:1.1;
+}
+
+.hero p{
+    margin-top:11px;
+    color:#8497ac;
+    max-width:650px;
+    font-size:12px;
+    line-height:1.7;
+}
+
+.hero-actions{
+    display:flex;
+    gap:9px;
+    margin-top:18px;
+}
+
+.btn{
+    border:1px solid var(--border);
+    background:rgba(255,255,255,.05);
+    color:#dbe7f5;
+    border-radius:11px;
+    padding:10px 15px;
+    font-size:11px;
+    font-weight:700;
+    cursor:pointer;
+    transition:.2s;
+}
+
+.btn:hover{
+    transform:translateY(-1px);
+    border-color:rgba(53,217,255,.3);
+}
+
+.btn-primary{
+    background:linear-gradient(135deg,#1bbce0,#416fff);
+    color:white;
+    border:0;
+    box-shadow:0 10px 25px rgba(53,217,255,.13);
+}
+
+/* =========================
+   STATUS PANEL
+========================= */
+
+.status-panel{
+    display:flex;
+    align-items:center;
+    gap:18px;
+}
+
+.status-orb{
+    width:85px;
+    height:85px;
+    border-radius:50%;
+    display:grid;
+    place-items:center;
+    border:1px solid rgba(56,230,164,.3);
+    background:rgba(56,230,164,.05);
+    box-shadow:
+      0 0 35px rgba(56,230,164,.09),
+      inset 0 0 30px rgba(56,230,164,.05);
+}
+
+.status-orb div{
+    width:55px;
+    height:55px;
+    border-radius:50%;
+    border:2px solid var(--green);
+    box-shadow:0 0 20px rgba(56,230,164,.3);
+}
+
+/* =========================
+   SECTION
+========================= */
+
+.section-title{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    margin:27px 0 13px;
+}
+
+.section-title h3{
+    font-size:13px;
+    font-weight:700;
+}
+
+.section-title span{
+    color:#61758c;
+    font-size:10px;
+}
+
+/* =========================
+   CHART
+========================= */
+
+.chart{
+    height:290px;
+    display:flex;
+    flex-direction:column;
+}
+
+.chart-area{
+    position:relative;
+    flex:1;
+    margin-top:18px;
+    border-radius:12px;
+    background:
+      repeating-linear-gradient(
+        to bottom,
+        rgba(255,255,255,.035) 0,
+        rgba(255,255,255,.035) 1px,
+        transparent 1px,
+        transparent 48px
+      );
+    overflow:hidden;
+}
+
+.chart-line{
+    position:absolute;
+    left:0;
+    right:0;
+    bottom:45%;
+    height:2px;
+    background:linear-gradient(90deg,transparent,var(--cyan),#779bff,transparent);
+    box-shadow:0 0 15px rgba(53,217,255,.35);
+    transform:skewY(-3deg);
+}
+
+.chart-line::after{
+    content:"";
+    position:absolute;
+    width:7px;
+    height:7px;
+    border-radius:50%;
+    background:var(--cyan);
+    right:10%;
+    top:-3px;
+    box-shadow:0 0 14px var(--cyan);
+}
+
+.chart-labels{
+    display:flex;
+    justify-content:space-between;
+    color:#56697f;
+    font-size:9px;
+    margin-top:9px;
+}
+
+/* =========================
+   RISK
+========================= */
+
+.risk-card{
+    display:flex;
+    align-items:center;
+    gap:22px;
+    min-height:190px;
+}
+
+.risk-ring{
+    width:125px;
+    height:125px;
+    border-radius:50%;
+    display:grid;
+    place-items:center;
+    background:
+      radial-gradient(circle,#0b1420 57%,transparent 59%),
+      conic-gradient(var(--green) 0 35%,rgba(255,255,255,.06) 35% 100%);
+    box-shadow:0 0 35px rgba(56,230,164,.08);
+    flex-shrink:0;
+}
+
+.risk-ring strong{
+    font-family:"Space Grotesk";
+    font-size:30px;
+}
+
+.risk-ring small{
+    color:#71849b;
+    font-size:8px;
+}
+
+.risk-content h4{
+    font-size:17px;
+}
+
+.risk-content p{
+    color:#788ca3;
+    font-size:11px;
+    line-height:1.7;
+    margin-top:8px;
+}
+
+/* =========================
+   LISTS
+========================= */
+
+.list{
+    display:flex;
+    flex-direction:column;
+    gap:9px;
+}
+
+.list-row{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:12px;
+    padding:12px;
+    border-radius:12px;
+    background:rgba(255,255,255,.025);
+    border:1px solid rgba(255,255,255,.045);
+}
+
+.list-main{
+    display:flex;
+    align-items:center;
+    gap:10px;
+}
+
+.event-dot{
+    width:8px;
+    height:8px;
+    border-radius:50%;
+    background:var(--red);
+    box-shadow:0 0 10px rgba(255,83,100,.45);
+}
+
+.list-title{
+    font-size:11px;
+    font-weight:700;
+}
+
+.list-sub{
+    color:#61758c;
+    font-size:9px;
+    margin-top:3px;
+}
+
+.badge{
+    padding:5px 8px;
+    border-radius:20px;
+    font-size:8px;
+    font-weight:800;
+    letter-spacing:.5px;
+}
+
+.badge-safe{
+    color:var(--green);
+    background:rgba(56,230,164,.08);
+    border:1px solid rgba(56,230,164,.14);
+}
+
+.badge-warning{
+    color:var(--yellow);
+    background:rgba(255,209,102,.08);
+    border:1px solid rgba(255,209,102,.14);
+}
+
+.badge-critical{
+    color:var(--red);
+    background:rgba(255,83,100,.08);
+    border:1px solid rgba(255,83,100,.14);
+}
+
+/* =========================
+   TABLE
+========================= */
+
+.table-wrap{
+    overflow:auto;
+}
+
+table{
+    width:100%;
+    border-collapse:collapse;
+    min-width:650px;
+}
+
+th{
+    text-align:left;
+    color:#62758c;
+    font-size:9px;
+    text-transform:uppercase;
+    letter-spacing:1px;
+    padding:12px;
+    border-bottom:1px solid var(--border);
+}
+
+td{
+    color:#b9c8d8;
+    font-size:10px;
+    padding:13px 12px;
+    border-bottom:1px solid rgba(255,255,255,.04);
+}
+
+tr:hover td{
+    background:rgba(255,255,255,.018);
+}
+
+/* =========================
+   HEALTH BARS
+========================= */
+
+.health-item{
+    margin-bottom:17px;
+}
+
+.health-top{
+    display:flex;
+    justify-content:space-between;
+    margin-bottom:7px;
+}
+
+.health-top span{
+    font-size:10px;
+}
+
+.health-top strong{
+    font-size:9px;
+    color:var(--green);
+}
+
+.health-bar{
+    height:6px;
+    border-radius:20px;
+    background:rgba(255,255,255,.06);
+    overflow:hidden;
+}
+
+.health-fill{
+    height:100%;
+    width:94%;
+    border-radius:20px;
+    background:linear-gradient(90deg,var(--cyan),var(--green));
+    box-shadow:0 0 12px rgba(56,230,164,.2);
+}
+
+/* =========================
+   DIGITAL TWIN
+========================= */
+
+.twin{
+    min-height:350px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    position:relative;
+}
+
+.twin-box{
+    width:180px;
+    height:220px;
+    border:2px solid rgba(53,217,255,.45);
+    border-radius:18px;
+    background:
+      linear-gradient(145deg,rgba(53,217,255,.06),rgba(255,255,255,.02));
+    box-shadow:
+      0 0 45px rgba(53,217,255,.08),
+      inset 0 0 35px rgba(53,217,255,.04);
+    position:relative;
+}
+
+.twin-box::before{
+    content:"VAX";
+    position:absolute;
+    top:78px;
+    left:0;
+    right:0;
+    text-align:center;
+    font-family:"Space Grotesk";
+    font-size:24px;
+    color:rgba(53,217,255,.5);
+    letter-spacing:5px;
+}
+
+.twin-led{
+    position:absolute;
+    width:9px;
+    height:9px;
+    border-radius:50%;
+    background:var(--green);
+    box-shadow:0 0 15px var(--green);
+}
+
+.led1{top:20px;right:20px;}
+.led2{top:20px;left:20px;}
+
+.sensor-tag{
+    position:absolute;
+    padding:7px 10px;
+    border-radius:8px;
+    background:#101b2a;
+    border:1px solid var(--border);
+    color:#8ea3b9;
+    font-size:8px;
+}
+
+.tag-temp{left:-88px;top:70px;}
+.tag-vib{right:-88px;top:125px;}
+.tag-net{left:-88px;bottom:55px;}
+
+/* =========================
+   VOICE
+========================= */
+
+.voice-panel{
+    text-align:center;
+    padding:35px;
+}
+
+.mic{
+    width:100px;
+    height:100px;
+    border-radius:50%;
+    margin:0 auto 20px;
+    display:grid;
+    place-items:center;
+    font-size:34px;
+    background:
+      radial-gradient(circle,rgba(53,217,255,.17),rgba(53,217,255,.025));
+    border:1px solid rgba(53,217,255,.25);
+    box-shadow:
+      0 0 0 12px rgba(53,217,255,.025),
+      0 0 50px rgba(53,217,255,.12);
+}
+
+.voice-panel h3{
+    font-size:18px;
+}
+
+.voice-panel p{
+    color:#71859c;
+    font-size:11px;
+    margin-top:8px;
+}
+
+.transcript{
+    margin-top:22px;
+    padding:16px;
+    border-radius:13px;
+    background:rgba(0,0,0,.16);
+    border:1px solid var(--border);
+    text-align:left;
+    color:#93a7bd;
+    font-size:10px;
+}
+
+/* =========================
+   EMERGENCY
+========================= */
+
+.emergency{
+    border-color:rgba(255,83,100,.22);
+    background:
+      radial-gradient(circle at 85% 20%,rgba(255,83,100,.08),transparent 25%),
+      linear-gradient(145deg,rgba(28,16,23,.9),rgba(13,14,21,.9));
+}
+
+.emergency-title{
+    display:flex;
+    align-items:center;
+    gap:10px;
+}
+
+.emergency-icon{
+    width:40px;
+    height:40px;
+    display:grid;
+    place-items:center;
+    border-radius:12px;
+    background:rgba(255,83,100,.09);
+    border:1px solid rgba(255,83,100,.2);
+}
+
+.emergency h3{
+    font-size:17px;
+}
+
+.emergency p{
+    color:#7c8b9d;
+    font-size:10px;
+    line-height:1.7;
+    margin:15px 0;
+}
+
+.danger-btn{
+    background:rgba(255,83,100,.1);
+    color:#ff7885;
+    border-color:rgba(255,83,100,.22);
+}
+
+/* =========================
+   SETTINGS
+========================= */
+
+.form-grid{
+    display:grid;
+    grid-template-columns:repeat(2,1fr);
+    gap:14px;
+}
+
+.field{
+    display:flex;
+    flex-direction:column;
+    gap:7px;
+}
+
+.field label{
+    color:#71849a;
+    font-size:9px;
+    font-weight:700;
+    text-transform:uppercase;
+    letter-spacing:1px;
+}
+
+.field input,
+.field select{
+    width:100%;
+    border:1px solid var(--border);
+    outline:0;
+    color:#dce8f5;
+    background:#0b1420;
+    border-radius:10px;
+    padding:11px 12px;
+    font-size:11px;
+}
+
+.field input:focus,
+.field select:focus{
+    border-color:rgba(53,217,255,.4);
+    box-shadow:0 0 0 3px rgba(53,217,255,.05);
+}
+
+/* =========================
+   TOGGLE
+========================= */
+
+.toggle-row{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding:13px 0;
+    border-bottom:1px solid rgba(255,255,255,.05);
+}
+
+.toggle{
+    width:40px;
+    height:21px;
+    padding:2px;
+    border-radius:20px;
+    background:#1d2a3a;
+    cursor:pointer;
+}
+
+.toggle span{
+    display:block;
+    width:17px;
+    height:17px;
+    border-radius:50%;
+    background:#788ba0;
+    transition:.2s;
+}
+
+.toggle.on{
+    background:rgba(53,217,255,.25);
+}
+
+.toggle.on span{
+    transform:translateX(19px);
+    background:var(--cyan);
+    box-shadow:0 0 10px rgba(53,217,255,.5);
+}
+
+/* =========================
+   LOCATION
+========================= */
+
+.map{
+    min-height:310px;
+    border-radius:17px;
+    position:relative;
+    overflow:hidden;
+    background:
+      linear-gradient(35deg,transparent 45%,rgba(53,217,255,.04) 46%,transparent 47%),
+      linear-gradient(-20deg,transparent 45%,rgba(255,255,255,.035) 46%,transparent 47%),
+      #0a121d;
+    border:1px solid var(--border);
+}
+
+.map-grid{
+    position:absolute;
+    inset:0;
+    background-image:
+      linear-gradient(rgba(255,255,255,.035) 1px,transparent 1px),
+      linear-gradient(90deg,rgba(255,255,255,.035) 1px,transparent 1px);
+    background-size:45px 45px;
+}
+
+.location-pin{
+    position:absolute;
+    left:50%;
+    top:50%;
+    width:18px;
+    height:18px;
+    border-radius:50%;
+    background:var(--cyan);
+    box-shadow:
+      0 0 0 10px rgba(53,217,255,.08),
+      0 0 35px rgba(53,217,255,.65);
+}
+
+.location-label{
+    position:absolute;
+    left:calc(50% + 25px);
+    top:calc(50% - 20px);
+    padding:9px 12px;
+    background:#101c2b;
+    border:1px solid var(--border);
+    border-radius:10px;
+    font-size:9px;
+}
+
+/* =========================
+   REPORT
+========================= */
+
+.report-card{
+    text-align:center;
+    padding:45px 20px;
+}
+
+.report-icon{
+    font-size:40px;
+    margin-bottom:14px;
+}
+
+.report-card h3{
+    font-size:17px;
+}
+
+.report-card p{
+    color:#71849b;
+    font-size:10px;
+    margin:8px 0 20px;
+}
+
+/* =========================
+   FOOTER
+========================= */
+
+.footer{
+    padding:30px 5px 10px;
+    color:#40536a;
+    font-size:9px;
+    text-align:center;
+}
+
+/* =========================
+   TOAST
+========================= */
+
+.toast{
+    position:fixed;
+    right:25px;
+    bottom:25px;
+    z-index:5000;
+    padding:14px 17px;
+    border-radius:13px;
+    background:#101b29;
+    border:1px solid rgba(53,217,255,.2);
+    box-shadow:0 20px 60px rgba(0,0,0,.5);
+    color:#dce8f5;
+    font-size:11px;
+    transform:translateY(120px);
+    opacity:0;
+    transition:.3s;
+}
+
+.toast.show{
+    transform:none;
+    opacity:1;
+}
+
+/* =========================
+   MOBILE
+========================= */
+
+@media(max-width:1150px){
+    .grid-6{
+        grid-template-columns:repeat(3,1fr);
+    }
+
+    .grid-4{
+        grid-template-columns:repeat(2,1fr);
+    }
+}
+
+@media(max-width:800px){
+    .sidebar{
+        transform:translateX(-100%);
+        transition:.25s;
+    }
+
+    .sidebar.open{
+        transform:none;
+        box-shadow:20px 0 80px rgba(0,0,0,.5);
+    }
+
+    .main{
+        margin-left:0;
+        width:100%;
+    }
+
+    .menu{
+        display:block;
+    }
+
+    .topbar{
+        padding:0 15px;
+    }
+
+    .content{
+        padding:18px 14px;
+    }
+
+    .grid-6,
+    .grid-4,
+    .grid-3,
+    .grid-2{
+        grid-template-columns:1fr;
+    }
+
+    .hero{
+        padding:23px;
+    }
+
+    .hero h3{
+        font-size:26px;
+    }
+
+    .status-panel{
+        display:none;
+    }
+
+    .page-heading{
+        gap:15px;
+    }
+
+    .form-grid{
+        grid-template-columns:1fr;
+    }
+}
+
+@media(max-width:500px){
+    .mode-badge{
+        display:none;
+    }
+
+    .connection{
+        font-size:9px;
+    }
+
+    .top-actions .icon-btn{
+        width:34px;
+        height:34px;
+    }
+
+    .page-heading h2{
+        font-size:22px;
+    }
+
+    .risk-card{
+        flex-direction:column;
+        align-items:flex-start;
+    }
+}
+</style>
 </head>
+
 <body>
 
-<div class="shell">
+<div class="app">
 
-  <!-- SIDEBAR -->
-  <nav class="sidebar" id="sidebar">
-    <div class="brand">
-      <div class="brand-mark">VG</div>
-      <div class="brand-text">
-        <div class="brand-title">VaxGuard</div>
-        <div class="brand-sub">Cold-chain guardian</div>
-      </div>
+<!-- ================= SIDEBAR ================= -->
+
+<aside class="sidebar" id="sidebar">
+
+    <div class="logo">
+        <div class="logo-mark">🛡️</div>
+        <div>
+            <h1>VaxGuard</h1>
+            <span>COLD-CHAIN INTELLIGENCE</span>
+        </div>
     </div>
 
-    <div class="nav-group">
-      <button class="nav-item active" data-screen="overview">Overview</button>
-      <button class="nav-item" data-screen="live">Live Monitor</button>
-      <button class="nav-item" data-screen="analytics">Analytics</button>
-      <button class="nav-item" data-screen="risk">Risk &amp; AI Advisory</button>
-      <button class="nav-item" data-screen="vibration">Vibration Intelligence</button>
-      <button class="nav-item" data-screen="alerts">Alerts Center</button>
-      <button class="nav-item" data-screen="history">Audit History</button>
-      <button class="nav-item" data-screen="sensorhealth">Sensor &amp; Device Health</button>
-      <button class="nav-item" data-screen="voice">Voice Assistant</button>
-      <button class="nav-item" data-screen="emergency">Emergency Response</button>
-      <button class="nav-item" data-screen="reports">Reports &amp; Downloads</button>
-      <button class="nav-item" data-screen="settings">Settings</button>
-      <button class="nav-item" data-screen="system">System / Self-Test</button>
+    <div class="nav-section">Monitoring</div>
+
+    <nav class="nav">
+
+        <button class="active" onclick="showScreen('overview',this)">
+            <span class="nav-icon">◈</span> Overview
+        </button>
+
+        <button onclick="showScreen('live',this)">
+            <span class="nav-icon">◉</span> Live Monitor
+        </button>
+
+        <button onclick="showScreen('temperature',this)">
+            <span class="nav-icon">◌</span> Temperature Analytics
+        </button>
+
+        <button onclick="showScreen('risk',this)">
+            <span class="nav-icon">⌁</span> Risk Intelligence
+        </button>
+
+        <button onclick="showScreen('vibration',this)">
+            <span class="nav-icon">〰</span> Vibration Intelligence
+        </button>
+
+        <button onclick="showScreen('prediction',this)">
+            <span class="nav-icon">↗</span> Prediction / Early Warning
+        </button>
+
+        <button onclick="showScreen('advisory',this)">
+            <span class="nav-icon">✦</span> Condition Advisory
+        </button>
+
+        <div class="nav-section">Operations</div>
+
+        <button onclick="showScreen('alerts',this)">
+            <span class="nav-icon">⚠</span> Alerts Center
+        </button>
+
+        <button onclick="showScreen('audit',this)">
+            <span class="nav-icon">▤</span> Audit History
+        </button>
+
+        <button onclick="showScreen('sensor',this)">
+            <span class="nav-icon">◉</span> Sensor Health
+        </button>
+
+        <button onclick="showScreen('device',this)">
+            <span class="nav-icon">⬡</span> Device Health
+        </button>
+
+        <button onclick="showScreen('network',this)">
+            <span class="nav-icon">⌁</span> Network Diagnostics
+        </button>
+
+        <div class="nav-section">Intelligence</div>
+
+        <button onclick="showScreen('voice',this)">
+            <span class="nav-icon">🎙</span> Voice Assistant
+        </button>
+
+        <button onclick="showScreen('emergency',this)">
+            <span class="nav-icon">🚨</span> Emergency Response
+        </button>
+
+        <button onclick="showScreen('location',this)">
+            <span class="nav-icon">⌖</span> Location
+        </button>
+
+        <button onclick="showScreen('reports',this)">
+            <span class="nav-icon">▥</span> Reports
+        </button>
+
+        <div class="nav-section">System</div>
+
+        <button onclick="showScreen('settings',this)">
+            <span class="nav-icon">⚙</span> Settings
+        </button>
+
+        <button onclick="showScreen('selftest',this)">
+            <span class="nav-icon">✓</span> System / Self-Test
+        </button>
+
+    </nav>
+</aside>
+
+<!-- ================= MAIN ================= -->
+
+<main class="main">
+
+<header class="topbar">
+
+    <div class="top-left">
+
+        <button class="menu" onclick="toggleSidebar()">☰</button>
+
+        <div class="mode-badge">
+            MODE: <span id="topMode">—</span>
+        </div>
+
+        <div class="mode-badge">
+            STATE: <span id="topState">—</span>
+        </div>
+
+        <div class="connection">
+            <span class="connection-dot" id="connectionDot"></span>
+            <span id="connectionText">connecting…</span>
+        </div>
+
     </div>
 
-    <div class="sidebar-footer">
-      <button id="themeToggle" class="ghost-btn">Toggle theme</button>
+    <div class="top-actions">
+
+        <button class="icon-btn" onclick="toggleTheme()">☼</button>
+
+        <button class="icon-btn" onclick="showToast('No new alerts')">
+            🔔
+            <span class="notification-count" id="alertCount">0</span>
+        </button>
+
     </div>
-  </nav>
 
-  <!-- MAIN -->
-  <main class="main">
-    <header class="topbar">
-      <button class="hamburger" id="hamburger" aria-label="Toggle navigation">☰</button>
-      <div class="mode-pill" id="modePill">MODE: —</div>
-      <div class="conn-pill" id="connPill">CONNECTING…</div>
-      <div class="state-pill" id="statePill">STATE: —</div>
-      <div class="spacer"></div>
-      <div class="freshness" id="freshness">Last updated: —</div>
-    </header>
+</header>
 
-    <div class="screens">
+<div class="content">
 
-      <!-- OVERVIEW / DIGITAL TWIN -->
-      <section class="screen active" id="screen-overview">
-        <h1>Overview</h1>
-        <p class="muted">A live software representation (digital twin) of the physical VaxGuard device.</p>
-        <div class="grid cards-4">
-          <div class="card">
-            <div class="card-label">Device</div>
-            <div class="card-value" id="ov-device">—</div>
-          </div>
-          <div class="card">
-            <div class="card-label">Mode</div>
-            <div class="card-value" id="ov-mode">—</div>
-          </div>
-          <div class="card">
+<!-- ================= OVERVIEW ================= -->
+
+<section class="screen active" id="overview">
+
+    <div class="page-heading">
+        <div>
+            <h2>Overview</h2>
+            <p>Real-time cold-chain intelligence and operational status</p>
+        </div>
+
+        <div class="live-chip">
+            <span class="live-dot"></span>
+            SYSTEM ONLINE
+        </div>
+    </div>
+
+    <div class="hero">
+
+        <div>
+            <h3>Protect every dose with intelligent cold-chain monitoring.</h3>
+
+            <p>
+                VaxGuard continuously observes temperature, humidity and vibration
+                conditions and converts sensor signals into actionable operational intelligence.
+            </p>
+
+            <div class="hero-actions">
+                <button class="btn btn-primary" onclick="showScreenByName('live')">
+                    Open Live Monitor
+                </button>
+
+                <button class="btn" onclick="showScreenByName('selftest')">
+                    Run Self-Test
+                </button>
+            </div>
+        </div>
+
+        <div class="status-panel">
+            <div class="status-orb">
+                <div></div>
+            </div>
+        </div>
+
+    </div>
+
+    <div class="grid grid-6">
+
+        <div class="card cyan">
             <div class="card-label">Temperature</div>
-            <div class="card-value" id="ov-temp">—</div>
-          </div>
-          <div class="card">
+            <div class="metric">
+                <div class="metric-value" id="tempValue">--</div>
+                <div class="metric-unit">°C</div>
+            </div>
+            <div class="metric-status">Cold-chain environment</div>
+        </div>
+
+        <div class="card">
             <div class="card-label">Humidity</div>
-            <div class="card-value" id="ov-humidity">—</div>
-          </div>
-          <div class="card">
+            <div class="metric">
+                <div class="metric-value" id="humidityValue">--</div>
+                <div class="metric-unit">%</div>
+            </div>
+            <div class="metric-status">Ambient humidity</div>
+        </div>
+
+        <div class="card purple">
             <div class="card-label">Vibration</div>
-            <div class="card-value" id="ov-vibration">—</div>
-          </div>
-          <div class="card">
-            <div class="card-label">Risk score</div>
-            <div class="card-value" id="ov-risk">—</div>
-          </div>
-          <div class="card">
+            <div class="metric">
+                <div class="metric-value" id="vibrationValue">--</div>
+            </div>
+            <div class="metric-status">Motion state</div>
+        </div>
+
+        <div class="card green">
+            <div class="card-label">Risk Score</div>
+            <div class="metric">
+                <div class="metric-value" id="riskValue">--</div>
+            </div>
+            <div class="metric-status">AI-assisted analysis</div>
+        </div>
+
+        <div class="card yellow">
             <div class="card-label">Condition</div>
-            <div class="card-value" id="ov-condition">—</div>
-          </div>
-          <div class="card">
-            <div class="card-label">Connectivity</div>
-            <div class="card-value" id="ov-connectivity">—</div>
-          </div>
+            <div class="metric">
+                <div class="metric-value" id="conditionValue">--</div>
+            </div>
+            <div class="metric-status">Current assessment</div>
         </div>
-        <div class="notice" id="ov-dataflag">—</div>
-        <div class="threshold-note">Prototype threshold — configure according to vaccine/manufacturer requirements.</div>
-      </section>
 
-      <!-- LIVE MONITOR -->
-      <section class="screen" id="screen-live">
-        <h1>Live Monitor</h1>
-        <div class="grid cards-3">
-          <div class="card big">
-            <div class="card-label">Temperature</div>
-            <div class="card-value huge" id="live-temp">—</div>
-            <div class="card-sub" id="live-temp-trend">Trend: —</div>
-          </div>
-          <div class="card big">
-            <div class="card-label">Humidity</div>
-            <div class="card-value huge" id="live-hum">—</div>
-          </div>
-          <div class="card big">
-            <div class="card-label">Vibration status</div>
-            <div class="card-value huge" id="live-vib">—</div>
-          </div>
-        </div>
-        <div class="grid cards-2">
-          <div class="card">
-            <div class="card-label">Risk gauge</div>
-            <div class="gauge-wrap"><canvas id="riskGauge" height="160"></canvas></div>
-          </div>
-          <div class="card">
-            <div class="card-label">Status</div>
-            <table class="kv-table">
-              <tr><td>Device status</td><td id="live-devstatus">—</td></tr>
-              <tr><td>Sensor health</td><td id="live-sensorhealth">—</td></tr>
-              <tr><td>Data freshness</td><td id="live-freshness">—</td></tr>
-              <tr><td>Connection quality</td><td id="live-connquality">—</td></tr>
-              <tr><td>Last updated</td><td id="live-lastupdated">—</td></tr>
-            </table>
-          </div>
-        </div>
-      </section>
-
-      <!-- ANALYTICS / GRAPHS -->
-      <section class="screen" id="screen-analytics">
-        <h1>Analytics</h1>
-        <div class="toolbar">
-          <label>Time range:</label>
-          <select id="rangeSelect">
-            <option value="1">1 hour</option>
-            <option value="6">6 hours</option>
-            <option value="12">12 hours</option>
-            <option value="24" selected>24 hours</option>
-            <option value="168">7 days</option>
-          </select>
-          <button class="btn" id="refreshCharts">Refresh</button>
-          <span class="data-tag" id="chartDataTag">—</span>
-        </div>
-        <div class="grid cards-2">
-          <div class="card"><div class="card-label">Temperature vs time</div><canvas id="tempChart" height="220"></canvas></div>
-          <div class="card"><div class="card-label">Humidity vs time</div><canvas id="humChart" height="220"></canvas></div>
-        </div>
-        <div class="grid cards-2">
-          <div class="card"><div class="card-label">Risk score vs time</div><canvas id="riskChart" height="220"></canvas></div>
-          <div class="card"><div class="card-label">Vibration events vs time</div><canvas id="vibChart" height="220"></canvas></div>
-        </div>
-      </section>
-
-      <!-- RISK / AI ADVISORY -->
-      <section class="screen" id="screen-risk">
-        <h1>Risk &amp; AI Advisory</h1>
-        <p class="muted">AI-assisted analytical prototype — not a medically validated prediction.</p>
-        <div class="grid cards-2">
-          <div class="card">
-            <div class="card-label">Current risk score</div>
-            <div class="card-value huge" id="risk-score">—</div>
-            <div class="card-sub" id="risk-category">—</div>
-          </div>
-          <div class="card">
-            <div class="card-label">Early warning</div>
-            <div id="risk-earlywarning">No early warning at this time.</div>
-          </div>
-        </div>
         <div class="card">
-          <div class="card-label">Why the score changed</div>
-          <ul id="risk-reasons" class="reason-list"><li class="muted">Waiting for data…</li></ul>
+            <div class="card-label">Device</div>
+            <div class="metric">
+                <div class="metric-value" style="font-size:20px">--</div>
+            </div>
+            <div class="metric-status">Connection status</div>
         </div>
-        <div class="card">
-          <div class="card-label">Root-cause analysis</div>
-          <div id="risk-rootcause">Insufficient events to determine a contributing factor yet.</div>
-        </div>
-        <div class="card">
-          <div class="card-label">Cold-chain condition indicator</div>
-          <div class="card-value" id="risk-condition">—</div>
-          <div id="risk-condition-reason" class="muted"></div>
-        </div>
-      </section>
-
-      <!-- VIBRATION INTELLIGENCE -->
-      <section class="screen" id="screen-vibration">
-        <h1>Vibration Intelligence</h1>
-        <p class="muted">SW-420 reports vibration/shock events, not precise acceleration measurements.</p>
-        <div class="grid cards-3">
-          <div class="card"><div class="card-label">Current status</div><div class="card-value" id="vib-status">—</div></div>
-          <div class="card"><div class="card-label">Total events</div><div class="card-value" id="vib-count">—</div></div>
-          <div class="card"><div class="card-label">Events (last 5 min)</div><div class="card-value" id="vib-recent">—</div></div>
-        </div>
-        <div class="card">
-          <div class="card-label">Recent vibration history</div>
-          <table class="data-table" id="vib-table">
-            <thead><tr><th>Time</th><th>Temperature</th><th>Mode</th></tr></thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </section>
-
-      <!-- ALERTS CENTER -->
-      <section class="screen" id="screen-alerts">
-        <h1>Alerts Center</h1>
-        <div class="card">
-          <table class="data-table" id="alerts-table">
-            <thead><tr><th>Time</th><th>Type</th><th>Severity</th><th>Risk</th><th>Status</th><th>Actions</th></tr></thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </section>
-
-      <!-- AUDIT HISTORY -->
-      <section class="screen" id="screen-history">
-        <h1>Audit History</h1>
-        <div class="toolbar">
-          <select id="histSeverity">
-            <option value="">All severities</option>
-            <option>INFO</option><option>WARNING</option><option>HIGH</option><option>CRITICAL</option><option>DANGEROUS</option>
-          </select>
-          <select id="histMode">
-            <option value="">All modes</option>
-            <option>LIVE</option><option>DEMO</option>
-          </select>
-          <select id="histAck">
-            <option value="">All</option>
-            <option value="acknowledged">Acknowledged</option>
-            <option value="unacknowledged">Unacknowledged</option>
-          </select>
-          <button class="btn" id="histFilterBtn">Apply filters</button>
-          <button class="btn" id="exportCsvBtn">Export CSV</button>
-          <button class="btn" id="exportJsonBtn">Export JSON</button>
-          <button class="btn danger" id="clearHistBtn">Clear history</button>
-        </div>
-        <div class="card">
-          <table class="data-table" id="history-table">
-            <thead><tr><th>Time</th><th>Type</th><th>Severity</th><th>Temp</th><th>Vibration</th><th>Mode</th><th>Ack</th></tr></thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </section>
-
-      <!-- SENSOR & DEVICE HEALTH (incl. network diagnostics) -->
-      <section class="screen" id="screen-sensorhealth">
-        <h1>Sensor &amp; Device Health</h1>
-        <div class="grid cards-3">
-          <div class="card"><div class="card-label">DHT11</div><div class="card-value" id="sh-dht">—</div></div>
-          <div class="card"><div class="card-label">SW-420</div><div class="card-value" id="sh-sw420">—</div></div>
-          <div class="card"><div class="card-label">ESP32</div><div class="card-value" id="sh-esp32">—</div></div>
-        </div>
-        <div class="grid cards-3">
-          <div class="card"><div class="card-label">Temperature validity</div><div class="card-value" id="sh-tempvalid">—</div></div>
-          <div class="card"><div class="card-label">Humidity validity</div><div class="card-value" id="sh-humvalid">—</div></div>
-          <div class="card"><div class="card-label">Data freshness</div><div class="card-value" id="sh-freshness">—</div></div>
-        </div>
-        <div class="card">
-          <div class="card-label">Sensor health score</div>
-          <div class="card-value huge" id="sh-score">—</div>
-        </div>
-        <div class="card">
-          <div class="card-label">Network diagnostics</div>
-          <table class="kv-table">
-            <tr><td>Last heartbeat</td><td id="net-heartbeat">—</td></tr>
-            <tr><td>Uptime</td><td id="net-uptime">—</td></tr>
-            <tr><td>Server connection</td><td id="net-server">Connected (you are viewing this page)</td></tr>
-          </table>
-        </div>
-      </section>
-
-      <!-- VOICE ASSISTANT -->
-      <section class="screen" id="screen-voice">
-        <h1>Voice Assistant</h1>
-        <div class="card">
-          <div class="voice-row">
-            <button class="btn" id="voiceToggle">🎙 Start listening</button>
-            <span id="voiceStatus" class="data-tag">VOICE ASSISTANT: OFF</span>
-            <label class="switch-label"><input type="checkbox" id="voiceAlertsToggle" checked/> Voice alerts</label>
-          </div>
-          <p class="muted">Try: "What is the temperature?", "Is the vaccine safe?", "What is the current risk?", "Was vibration detected?", "Show today's alerts", "What should I do?", "Is the sensor working?", "What is the device status?"</p>
-          <div id="voiceTranscript" class="transcript"></div>
-        </div>
-      </section>
-
-      <!-- EMERGENCY RESPONSE (incl. location) -->
-      <section class="screen" id="screen-emergency">
-        <h1>Emergency Response</h1>
-        <div class="grid cards-3">
-          <div class="card"><div class="card-label">Severity</div><div class="card-value" id="em-severity">—</div></div>
-          <div class="card"><div class="card-label">Risk score</div><div class="card-value" id="em-risk">—</div></div>
-          <div class="card"><div class="card-label">Device status</div><div class="card-value" id="em-status">—</div></div>
-        </div>
-        <div class="card">
-          <div class="card-label">Location</div>
-          <div id="em-location">Location unavailable.</div>
-          <button class="btn" id="getLocationBtn">Get device / browser location</button>
-          <a id="mapLink" class="btn" style="display:none" target="_blank">Open map</a>
-        </div>
-        <div class="card">
-          <div class="card-label">Recommended immediate action</div>
-          <div id="em-action">—</div>
-        </div>
-        <div class="card">
-          <div class="card-label">Contact options</div>
-          <div class="toolbar">
-            <button class="btn" id="telegramTestBtn">Test Telegram</button>
-            <button class="btn danger" id="emergencyCallBtn">Call emergency contact</button>
-            <label class="switch-label"><input type="checkbox" id="testAlertMode" checked/> Test alert mode</label>
-          </div>
-          <div id="em-callresult" class="muted"></div>
-        </div>
-      </section>
-
-      <!-- REPORTS & DOWNLOADS -->
-      <section class="screen" id="screen-reports">
-        <h1>Reports &amp; Downloads</h1>
-        <div class="toolbar">
-          <select id="reportType">
-            <option value="daily">Daily report</option>
-            <option value="weekly">Weekly report</option>
-            <option value="summary">Cold-chain summary</option>
-          </select>
-          <button class="btn" id="genReportBtn">Generate report</button>
-        </div>
-        <div class="card" id="reportOutput">Select a report type and generate.</div>
-        <div class="card">
-          <div class="card-label">Download center</div>
-          <div class="toolbar">
-            <a class="btn" href="/api/export/csv">Download readings CSV</a>
-            <a class="btn" href="/api/export/json">Download JSON export</a>
-            <a class="btn" href="/api/export/audit-csv">Download audit history CSV</a>
-          </div>
-        </div>
-      </section>
-
-      <!-- SETTINGS -->
-      <section class="screen" id="screen-settings">
-        <h1>Settings</h1>
-        <form class="card" id="settingsForm">
-          <div class="form-row"><label>Device name</label><input type="text" id="set-devicename" /></div>
-          <div class="form-row"><label>Temperature min (°C)</label><input type="number" step="0.1" id="set-tempmin" /></div>
-          <div class="form-row"><label>Temperature max (°C)</label><input type="number" step="0.1" id="set-tempmax" /></div>
-          <div class="form-row"><label>Warning margin (°C)</label><input type="number" step="0.1" id="set-margin" /></div>
-          <div class="form-row"><label>Alert cooldown (sec)</label><input type="number" id="set-cooldown" /></div>
-          <div class="form-row"><label>Vibration sensitivity</label>
-            <select id="set-vibsens"><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option></select>
-          </div>
-          <div class="form-row"><label><input type="checkbox" id="set-telegram"/> Telegram alerts enabled</label></div>
-          <div class="form-row"><label><input type="checkbox" id="set-voicealerts"/> Voice alerts enabled</label></div>
-          <button class="btn primary" type="submit">Save settings</button>
-          <span id="settingsSaved" class="muted"></span>
-        </form>
-      </section>
-
-      <!-- SYSTEM / SELF TEST -->
-      <section class="screen" id="screen-system">
-        <h1>System / Self-Test</h1>
-        <button class="btn primary" id="runSelfTestBtn">Run self-test</button>
-        <div class="card">
-          <table class="data-table" id="selftest-table">
-            <thead><tr><th>Component</th><th>Status</th><th>Detail</th></tr></thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </section>
 
     </div>
-  </main>
+
+    <div class="section-title">
+        <h3>Temperature Trend</h3>
+        <span>Last 24 hours</span>
+    </div>
+
+    <div class="card chart">
+
+        <div class="chart-area">
+            <div class="chart-line"></div>
+        </div>
+
+        <div class="chart-labels">
+            <span>00:00</span>
+            <span>04:00</span>
+            <span>08:00</span>
+            <span>12:00</span>
+            <span>16:00</span>
+            <span>20:00</span>
+            <span>NOW</span>
+        </div>
+
+    </div>
+
+    <div class="footer">
+        Prototype threshold — configure according to vaccine/manufacturer requirements.
+    </div>
+
+</section>
+
+<!-- ================= LIVE ================= -->
+
+<section class="screen" id="live">
+
+    <div class="page-heading">
+        <div>
+            <h2>Live Monitor</h2>
+            <p>Real-time sensor telemetry</p>
+        </div>
+
+        <div class="live-chip">
+            <span class="live-dot"></span>
+            LIVE
+        </div>
+    </div>
+
+    <div class="grid grid-4">
+
+        <div class="card cyan">
+            <div class="card-label">Temperature</div>
+            <div class="metric">
+                <div class="metric-value" id="liveTemp">--</div>
+                <div class="metric-unit">°C</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-label">Humidity</div>
+            <div class="metric">
+                <div class="metric-value" id="liveHumidity">--</div>
+                <div class="metric-unit">%</div>
+            </div>
+        </div>
+
+        <div class="card purple">
+            <div class="card-label">Vibration Status</div>
+            <div class="metric">
+                <div class="metric-value" id="liveVibration">--</div>
+            </div>
+        </div>
+
+        <div class="card green">
+            <div class="card-label">Risk</div>
+            <div class="metric">
+                <div class="metric-value" id="liveRisk">--</div>
+            </div>
+        </div>
+
+    </div>
+
+    <div class="grid grid-2" style="margin-top:16px">
+
+        <div class="card">
+            <div class="card-label">Sensor Health</div>
+
+            <div style="margin-top:20px">
+                <div class="health-item">
+                    <div class="health-top">
+                        <span>DHT11</span>
+                        <strong>—</strong>
+                    </div>
+                    <div class="health-bar">
+                        <div class="health-fill"></div>
+                    </div>
+                </div>
+
+                <div class="health-item">
+                    <div class="health-top">
+                        <span>SW-420</span>
+                        <strong>—</strong>
+                    </div>
+                    <div class="health-bar">
+                        <div class="health-fill"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+
+            <div class="card-label">System Telemetry</div>
+
+            <div class="list" style="margin-top:15px">
+
+                <div class="list-row">
+                    <div class="list-title">Mode</div>
+                    <span class="badge badge-safe" id="liveMode">—</span>
+                </div>
+
+                <div class="list-row">
+                    <div class="list-title">Last Updated</div>
+                    <span class="list-sub" id="lastUpdated">—</span>
+                </div>
+
+                <div class="list-row">
+                    <div class="list-title">Connection Quality</div>
+                    <span class="badge badge-safe">—</span>
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+</section>
+
+<!-- ================= TEMPERATURE ================= -->
+
+<section class="screen" id="temperature">
+
+    <div class="page-heading">
+        <div>
+            <h2>Temperature Analytics</h2>
+            <p>Historical temperature intelligence</p>
+        </div>
+    </div>
+
+    <div class="card">
+
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+
+            <button class="btn btn-primary">1 hour</button>
+            <button class="btn">6 hours</button>
+            <button class="btn">12 hours</button>
+            <button class="btn">24 hours</button>
+            <button class="btn">7 days</button>
+
+        </div>
+
+        <div class="chart" style="margin-top:15px">
+
+            <div class="chart-area">
+                <div class="chart-line" style="bottom:52%;"></div>
+            </div>
+
+            <div class="chart-labels">
+                <span>Start</span>
+                <span>25%</span>
+                <span>50%</span>
+                <span>75%</span>
+                <span>Now</span>
+            </div>
+
+        </div>
+
+    </div>
+
+</section>
+
+<!-- ================= RISK ================= -->
+
+<section class="screen" id="risk">
+
+    <div class="page-heading">
+        <div>
+            <h2>Risk Intelligence</h2>
+            <p>Multi-sensor condition risk assessment</p>
+        </div>
+    </div>
+
+    <div class="grid grid-2">
+
+        <div class="card risk-card">
+
+            <div class="risk-ring">
+                <div style="text-align:center">
+                    <strong id="riskBig">--</strong>
+                    <br>
+                    <small>RISK SCORE</small>
+                </div>
+            </div>
+
+            <div class="risk-content">
+                <h4 id="riskLabel">—</h4>
+
+                <p>
+                    VaxGuard combines environmental and motion signals
+                    to provide an AI-assisted operational risk indicator.
+                </p>
+            </div>
+
+        </div>
+
+        <div class="card">
+
+            <div class="card-label">Why this score?</div>
+
+            <div class="list" style="margin-top:16px">
+
+                <div class="list-row">
+                    <div class="list-title">Temperature stability</div>
+                    <span>—</span>
+                </div>
+
+                <div class="list-row">
+                    <div class="list-title">Vibration exposure</div>
+                    <span>—</span>
+                </div>
+
+                <div class="list-row">
+                    <div class="list-title">Sensor confidence</div>
+                    <span>—</span>
+                </div>
+
+                <div class="list-row">
+                    <div class="list-title">Recent anomalies</div>
+                    <span>—</span>
+                </div>
+
+            </div>
+
+            <p style="color:#596d84;font-size:9px;margin-top:16px">
+                AI-assisted analytical prototype — rule-based, not a trained medical model.
+            </p>
+
+        </div>
+
+    </div>
+
+</section>
+
+<!-- ================= VIBRATION ================= -->
+
+<section class="screen" id="vibration">
+
+    <div class="page-heading">
+        <div>
+            <h2>Vibration Intelligence</h2>
+            <p>Shock and motion event analysis</p>
+        </div>
+    </div>
+
+    <div class="grid grid-4">
+
+        <div class="card purple">
+            <div class="card-label">Events · 1 min</div>
+            <div class="metric">
+                <div class="metric-value">--</div>
+            </div>
+        </div>
+
+        <div class="card purple">
+            <div class="card-label">Events · 10 min</div>
+            <div class="metric">
+                <div class="metric-value">--</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-label">Classification</div>
+            <div class="metric">
+                <div class="metric-value" style="font-size:22px">--</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-label">Total Recorded</div>
+            <div class="metric">
+                <div class="metric-value">--</div>
+            </div>
+        </div>
+
+    </div>
+
+    <div class="section-title">
+        <h3>Recent vibration history</h3>
+    </div>
+
+    <div class="card">
+
+        <div class="list">
+
+            <div class="list-row">
+                <div class="list-main">
+                    <span class="event-dot"></span>
+                    <div>
+                        <div class="list-title">No recent event</div>
+                        <div class="list-sub">Waiting for sensor telemetry</div>
+                    </div>
+                </div>
+
+                <span class="badge badge-safe">NORMAL</span>
+            </div>
+
+        </div>
+
+    </div>
+
+</section>
+
+<!-- ================= PREDICTION ================= -->
+
+<section class="screen" id="prediction">
+
+    <div class="page-heading">
+        <div>
+            <h2>Prediction / Early Warning</h2>
+            <p>Trend-based forward-looking intelligence</p>
+        </div>
+    </div>
+
+    <div class="grid grid-2">
+
+        <div class="card">
+
+            <div class="card-label">Forecast</div>
+
+            <div style="margin-top:18px">
+                <h3 style="font-family:'Space Grotesk';font-size:25px">
+                    —
+                </h3>
+
+                <p style="color:#74889e;font-size:11px;line-height:1.7;margin-top:10px">
+                    VaxGuard evaluates recent telemetry trends and detects
+                    early changes that may require inspection.
+                </p>
+            </div>
+
+        </div>
+
+        <div class="card">
+
+            <div class="card-label">Recommended Action</div>
+
+            <div style="margin-top:18px">
+                <h3 style="font-size:18px">—</h3>
+
+                <p style="color:#74889e;font-size:11px;margin-top:9px">
+                    —
+                </p>
+            </div>
+
+        </div>
+
+    </div>
+
+    <div class="section-title">
+        <h3>Trend</h3>
+    </div>
+
+    <div class="grid grid-3">
+
+        <div class="card">
+            <div class="card-label">Direction</div>
+            <div class="metric">
+                <div class="metric-value" style="font-size:21px">—</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-label">Slope</div>
+            <div class="metric">
+                <div class="metric-value" style="font-size:21px">—</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-label">Confidence</div>
+            <div class="metric">
+                <div class="metric-value" style="font-size:21px">—</div>
+            </div>
+        </div>
+
+    </div>
+
+</section>
+
+<!-- ================= ADVISORY ================= -->
+
+<section class="screen" id="advisory">
+
+    <div class="page-heading">
+        <div>
+            <h2>Condition Advisory</h2>
+            <p>Operational interpretation of current cold-chain conditions</p>
+        </div>
+    </div>
+
+    <div class="card">
+
+        <div style="display:flex;align-items:center;gap:15px">
+
+            <div class="status-orb" style="width:65px;height:65px">
+                <div style="width:38px;height:38px"></div>
+            </div>
+
+            <div>
+                <div class="card-label">Current condition</div>
+                <h3 style="font-family:'Space Grotesk';font-size:26px;margin-top:5px">
+                    —
+                </h3>
+            </div>
+
+        </div>
+
+        <p style="color:#788ca3;font-size:11px;line-height:1.8;margin-top:20px">
+            This indicates cold-chain condition only.
+            It does not determine vaccine potency.
+        </p>
+
+    </div>
+
+    <div class="section-title">
+        <h3>Root-cause analysis</h3>
+    </div>
+
+    <div class="grid grid-2">
+
+        <div class="card">
+            <div class="card-label">Most likely factor</div>
+            <h3 style="margin-top:15px;font-size:18px">—</h3>
+        </div>
+
+        <div class="card">
+            <div class="card-label">Recommended inspection</div>
+            <h3 style="margin-top:15px;font-size:18px">—</h3>
+        </div>
+
+    </div>
+
+</section>
+
+<!-- ================= ALERTS ================= -->
+
+<section class="screen" id="alerts">
+
+    <div class="page-heading">
+        <div>
+            <h2>Alerts Center</h2>
+            <p>Centralized operational alert management</p>
+        </div>
+    </div>
+
+    <div class="card">
+
+        <div class="table-wrap">
+
+            <table>
+
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Type</th>
+                        <th>Severity</th>
+                        <th>Message</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+
+                <tbody id="alertsTable">
+
+                    <tr>
+                        <td>—</td>
+                        <td>—</td>
+                        <td><span class="badge badge-safe">INFO</span></td>
+                        <td>No active alerts</td>
+                        <td>—</td>
+                        <td>
+                            <button class="btn" onclick="showToast('Nothing to acknowledge')">
+                                Acknowledge
+                            </button>
+                        </td>
+                    </tr>
+
+                </tbody>
+
+            </table>
+
+        </div>
+
+    </div>
+
+</section>
+
+<!-- ================= AUDIT ================= -->
+
+<section class="screen" id="audit">
+
+    <div class="page-heading">
+
+        <div>
+            <h2>Audit History</h2>
+            <p>Traceable event and operational history</p>
+        </div>
+
+    </div>
+
+    <div class="card">
+
+        <div style="display:flex;gap:7px;flex-wrap:wrap;margin-bottom:17px">
+
+            <button class="btn btn-primary">All severities</button>
+            <button class="btn">INFO</button>
+            <button class="btn">WARNING</button>
+            <button class="btn">CRITICAL</button>
+            <button class="btn">DANGEROUS</button>
+
+            <span style="width:15px"></span>
+
+            <button class="btn">LIVE</button>
+            <button class="btn">DEMO</button>
+
+            <button class="btn" onclick="showToast('History refreshed')">
+                Refresh
+            </button>
+
+            <button class="btn" onclick="downloadCSV()">
+                Export CSV
+            </button>
+
+            <button class="btn" onclick="downloadJSON()">
+                Export JSON
+            </button>
+
+        </div>
+
+        <div class="table-wrap">
+
+            <table>
+
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Type</th>
+                        <th>Severity</th>
+                        <th>Temperature</th>
+                        <th>Mode</th>
+                        <th>Message</th>
+                        <th>Ack</th>
+                    </tr>
+                </thead>
+
+                <tbody>
+
+                    <tr>
+                        <td>—</td>
+                        <td>System</td>
+                        <td><span class="badge badge-safe">INFO</span></td>
+                        <td>—</td>
+                        <td>—</td>
+                        <td>System initialized</td>
+                        <td>—</td>
+                    </tr>
+
+                </tbody>
+
+            </table>
+
+        </div>
+
+    </div>
+
+</section>
+
+<!-- ================= SENSOR ================= -->
+
+<section class="screen" id="sensor">
+
+    <div class="page-heading">
+        <div>
+            <h2>Sensor Health</h2>
+            <p>Sensor availability and reliability monitoring</p>
+        </div>
+    </div>
+
+    <div class="grid grid-2">
+
+        <div class="card">
+
+            <div class="card-label">DHT11 Temperature / Humidity</div>
+
+            <div style="display:flex;justify-content:space-between;margin-top:18px">
+                <strong>—</strong>
+                <span class="badge badge-safe">UNKNOWN</span>
+            </div>
+
+            <div class="health-bar" style="margin-top:13px">
+                <div class="health-fill" style="width:0"></div>
+            </div>
+
+        </div>
+
+        <div class="card">
+
+            <div class="card-label">SW-420 Vibration</div>
+
+            <div style="display:flex;justify-content:space-between;margin-top:18px">
+                <strong>—</strong>
+                <span class="badge badge-safe">UNKNOWN</span>
+            </div>
+
+            <div class="health-bar" style="margin-top:13px">
+                <div class="health-fill" style="width:0"></div>
+            </div>
+
+        </div>
+
+    </div>
+
+</section>
+
+<!-- ================= DEVICE ================= -->
+
+<section class="screen" id="device">
+
+    <div class="page-heading">
+        <div>
+            <h2>Device Health</h2>
+            <p>VaxGuard digital twin</p>
+        </div>
+    </div>
+
+    <div class="grid grid-2">
+
+        <div class="card twin">
+
+            <div class="twin-box">
+
+                <div class="twin-led led1"></div>
+                <div class="twin-led led2"></div>
+
+                <div class="sensor-tag tag-temp">
+                    TEMP —
+                </div>
+
+                <div class="sensor-tag tag-vib">
+                    VIB —
+                </div>
+
+                <div class="sensor-tag tag-net">
+                    NET —
+                </div>
+
+            </div>
+
+        </div>
+
+        <div class="card">
+
+            <div class="list">
+
+                <div class="list-row">
+                    <div class="list-title">Device</div>
+                    <span>—</span>
+                </div>
+
+                <div class="list-row">
+                    <div class="list-title">Mode</div>
+                    <span>—</span>
+                </div>
+
+                <div class="list-row">
+                    <div class="list-title">Temperature</div>
+                    <span>—</span>
+                </div>
+
+                <div class="list-row">
+                    <div class="list-title">Humidity</div>
+                    <span>—</span>
+                </div>
+
+                <div class="list-row">
+                    <div class="list-title">Vibration</div>
+                    <span>—</span>
+                </div>
+
+                <div class="list-row">
+                    <div class="list-title">Risk</div>
+                    <span>—</span>
+                </div>
+
+                <div class="list-row">
+                    <div class="list-title">Connectivity</div>
+                    <span>—</span>
+                </div>
+
+                <div class="list-row">
+                    <div class="list-title">Last Seen</div>
+                    <span>—</span>
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+</section>
+
+<!-- ================= NETWORK ================= -->
+
+<section class="screen" id="network">
+
+    <div class="page-heading">
+        <div>
+            <h2>Network Diagnostics</h2>
+            <p>Connectivity and heartbeat diagnostics</p>
+        </div>
+    </div>
+
+    <div class="grid grid-3">
+
+        <div class="card">
+            <div class="card-label">Wi-Fi Status</div>
+            <div class="metric">
+                <div class="metric-value" style="font-size:22px">—</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-label">Server Connection</div>
+            <div class="metric">
+                <div class="metric-value" style="font-size:22px">—</div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-label">Last Heartbeat</div>
+            <div class="metric">
+                <div class="metric-value" style="font-size:18px">—</div>
+            </div>
+        </div>
+
+    </div>
+
+</section>
+
+<!-- ================= VOICE ================= -->
+
+<section class="screen" id="voice">
+
+    <div class="page-heading">
+        <div>
+            <h2>Voice Assistant</h2>
+            <p>Hands-free VaxGuard interaction</p>
+        </div>
+
+        <div class="mode-badge">
+            ASSISTANT: <span id="voiceStatus">OFF</span>
+        </div>
+    </div>
+
+    <div class="card voice-panel">
+
+        <div class="mic" onclick="startVoice()">
+            🎙
+        </div>
+
+        <h3>Voice Assistant</h3>
+
+        <p>
+            Ask VaxGuard about temperature, risk, vibration,
+            sensor health or device status.
+        </p>
+
+        <div style="margin-top:22px">
+
+            <button class="btn btn-primary" onclick="startVoice()">
+                🎙 Start Listening
+            </button>
+
+            <button class="btn" onclick="toggleVoiceAlerts()">
+                🔊 Voice Alerts: <span id="voiceAlertText">ON</span>
+            </button>
+
+        </div>
+
+        <div class="transcript" id="transcript">
+            Try: "What is the temperature?"<br>
+            "Is the vaccine safe?"<br>
+            "What is the current risk?"<br>
+            "Was vibration detected?"<br>
+            "What should I do?"<br>
+            "Is the sensor working?"<br>
+            "What is the device status?"
+        </div>
+
+    </div>
+
+</section>
+
+<!-- ================= EMERGENCY ================= -->
+
+<section class="screen" id="emergency">
+
+    <div class="page-heading">
+
+        <div>
+            <h2>Emergency Response</h2>
+            <p>Critical-event response control center</p>
+        </div>
+
+        <div class="badge badge-critical">
+            TEST ALERT MODE
+        </div>
+
+    </div>
+
+    <div class="card emergency">
+
+        <div class="emergency-title">
+
+            <div class="emergency-icon">
+                🚨
+            </div>
+
+            <div>
+                <div class="card-label">Current Severity</div>
+                <h3>—</h3>
+            </div>
+
+        </div>
+
+        <div class="grid grid-3" style="margin-top:25px">
+
+            <div>
+                <div class="card-label">Risk Score</div>
+                <h3 style="margin-top:8px">—</h3>
+            </div>
+
+            <div>
+                <div class="card-label">Temperature</div>
+                <h3 style="margin-top:8px">—</h3>
+            </div>
+
+            <div>
+                <div class="card-label">Vibration</div>
+                <h3 style="margin-top:8px">—</h3>
+            </div>
+
+            <div>
+                <div class="card-label">Sensor Health</div>
+                <h3 style="margin-top:8px">—</h3>
+            </div>
+
+            <div>
+                <div class="card-label">Device Status</div>
+                <h3 style="margin-top:8px">—</h3>
+            </div>
+
+            <div>
+                <div class="card-label">Location</div>
+                <h3 style="margin-top:8px">—</h3>
+            </div>
+
+        </div>
+
+        <p>
+            Recommended immediate action: —
+        </p>
+
+        <div style="display:flex;gap:9px;flex-wrap:wrap">
+
+            <button class="btn" onclick="showToast('Telegram test requested')">
+                Test Telegram
+            </button>
+
+            <button class="btn danger-btn" onclick="showToast('Emergency contact action requested')">
+                Call Emergency Contact
+            </button>
+
+            <button class="btn" onclick="showToast('All alerts acknowledged')">
+                Acknowledge All
+            </button>
+
+            <button class="btn" onclick="showToast('Alerts muted')">
+                Mute All
+            </button>
+
+        </div>
+
+    </div>
+
+    <div class="card" style="margin-top:16px">
+
+        <div style="display:flex;gap:10px;align-items:center">
+
+            <div class="badge badge-warning">
+                SAFETY
+            </div>
+
+            <span style="font-size:10px;color:#778aa0">
+                TEST ALERT MODE prevents accidental real emergency actions.
+            </span>
+
+        </div>
+
+    </div>
+
+</section>
+
+<!-- ================= LOCATION ================= -->
+
+<section class="screen" id="location">
+
+    <div class="page-heading">
+        <div>
+            <h2>Location</h2>
+            <p>Device location and deployment status</p>
+        </div>
+    </div>
+
+    <div class="grid grid-2">
+
+        <div class="card">
+
+            <div class="list">
+
+                <div class="list-row">
+                    <div class="list-title">Device ID</div>
+                    <span>—</span>
+                </div>
+
+                <div class="list-row">
+                    <div class="list-title">Last Known Location</div>
+                    <span>—</span>
+                </div>
+
+                <div class="list-row">
+                    <div class="list-title">Location Status</div>
+                    <span>—</span>
+                </div>
+
+            </div>
+
+            <button class="btn btn-primary" style="margin-top:18px"
+                    onclick="getLocation()">
+                ⌖ Get Browser Location
+            </button>
+
+        </div>
+
+        <div class="map">
+
+            <div class="map-grid"></div>
+
+            <div class="location-pin"></div>
+
+            <div class="location-label">
+                VAXGUARD DEVICE
+            </div>
+
+        </div>
+
+    </div>
+
+</section>
+
+<!-- ================= REPORTS ================= -->
+
+<section class="screen" id="reports">
+
+    <div class="page-heading">
+
+        <div>
+            <h2>Reports</h2>
+            <p>Generate operational intelligence reports</p>
+        </div>
+
+    </div>
+
+    <div class="card">
+
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+
+            <button class="btn btn-primary">
+                Daily report
+            </button>
+
+            <button class="btn">
+                Weekly report
+            </button>
+
+            <button class="btn btn-primary" onclick="generateReport()">
+                Generate
+            </button>
+
+        </div>
+
+    </div>
+
+    <div class="card report-card" style="margin-top:16px">
+
+        <div class="report-icon">▥</div>
+
+        <h3 id="reportTitle">
+            No report generated yet.
+        </h3>
+
+        <p id="reportText">
+            Generate a report to summarize sensor activity,
+            alerts, risk and operational events.
+        </p>
+
+    </div>
+
+</section>
+
+<!-- ================= SETTINGS ================= -->
+
+<section class="screen" id="settings">
+
+    <div class="page-heading">
+
+        <div>
+            <h2>Settings</h2>
+            <p>Configure device and analytical thresholds</p>
+        </div>
+
+    </div>
+
+    <div class="card">
+
+        <div class="form-grid">
+
+            <div class="field">
+                <label>Device Name</label>
+                <input id="deviceName" placeholder="VaxGuard-01">
+            </div>
+
+            <div class="field">
+                <label>Device ID</label>
+                <input id="deviceId" placeholder="VG-001">
+            </div>
+
+            <div class="field">
+                <label>Temp Min °C</label>
+                <input type="number" value="2">
+            </div>
+
+            <div class="field">
+                <label>Temp Max °C</label>
+                <input type="number" value="8">
+            </div>
+
+            <div class="field">
+                <label>Warning Margin °C</label>
+                <input type="number" value=".5">
+            </div>
+
+            <div class="field">
+                <label>Critical Margin °C</label>
+                <input type="number" value="1">
+            </div>
+
+            <div class="field">
+                <label>Alert Cooldown ms</label>
+                <input type="number" value="10000">
+            </div>
+
+        </div>
+
+        <div style="margin-top:25px">
+
+            <div class="toggle-row">
+                <span style="font-size:11px">Voice alerts enabled</span>
+                <div class="toggle on" onclick="toggleSwitch(this)">
+                    <span></span>
+                </div>
+            </div>
+
+            <div class="toggle-row">
+                <span style="font-size:11px">
+                    Telegram alerts enabled
+                </span>
+                <div class="toggle" onclick="toggleSwitch(this)">
+                    <span></span>
+                </div>
+            </div>
+
+        </div>
+
+        <button class="btn btn-primary"
+                style="margin-top:20px"
+                onclick="saveSettings()">
+            Save Settings
+        </button>
+
+    </div>
+
+</section>
+
+<!-- ================= SELF TEST ================= -->
+
+<section class="screen" id="selftest">
+
+    <div class="page-heading">
+
+        <div>
+            <h2>System / Self-Test</h2>
+            <p>Hardware, software and communication diagnostics</p>
+        </div>
+
+    </div>
+
+    <div class="card">
+
+        <button class="btn btn-primary"
+                onclick="runSelfTest()">
+            ✓ Run Self-Test
+        </button>
+
+        <div class="list" style="margin-top:22px" id="selfTestList">
+
+            <div class="list-row">
+                <div class="list-main">
+                    <div>
+                        <div class="list-title">ESP32 controller</div>
+                        <div class="list-sub">Waiting for test</div>
+                    </div>
+                </div>
+                <span class="badge badge-warning">WAIT</span>
+            </div>
+
+            <div class="list-row">
+                <div class="list-main">
+                    <div>
+                        <div class="list-title">DHT11 sensor</div>
+                        <div class="list-sub">Waiting for test</div>
+                    </div>
+                </div>
+                <span class="badge badge-warning">WAIT</span>
+            </div>
+
+            <div class="list-row">
+                <div class="list-main">
+                    <div>
+                        <div class="list-title">SW-420 sensor</div>
+                        <div class="list-sub">Waiting for test</div>
+                    </div>
+                </div>
+                <span class="badge badge-warning">WAIT</span>
+            </div>
+
+            <div class="list-row">
+                <div class="list-main">
+                    <div>
+                        <div class="list-title">Network</div>
+                        <div class="list-sub">Waiting for test</div>
+                    </div>
+                </div>
+                <span class="badge badge-warning">WAIT</span>
+            </div>
+
+            <div class="list-row">
+                <div class="list-main">
+                    <div>
+                        <div class="list-title">Server communication</div>
+                        <div class="list-sub">Waiting for test</div>
+                    </div>
+                </div>
+                <span class="badge badge-warning">WAIT</span>
+            </div>
+
+        </div>
+
+    </div>
+
+</section>
+
 </div>
 
-<script src="app.js"></script>
+</main>
+
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+
+/* =========================================
+   NAVIGATION
+========================================= */
+
+function showScreen(id,button){
+
+    document.querySelectorAll(".screen")
+        .forEach(screen => screen.classList.remove("active"));
+
+    const target=document.getElementById(id);
+
+    if(target){
+        target.classList.add("active");
+    }
+
+    document.querySelectorAll(".nav button")
+        .forEach(btn => btn.classList.remove("active"));
+
+    if(button){
+        button.classList.add("active");
+    }
+
+    document.getElementById("sidebar").classList.remove("open");
+
+    window.scrollTo({
+        top:0,
+        behavior:"smooth"
+    });
+}
+
+function showScreenByName(id){
+
+    const button=[...document.querySelectorAll(".nav button")]
+        .find(btn =>
+            btn.getAttribute("onclick") &&
+            btn.getAttribute("onclick").includes("'" + id + "'")
+        );
+
+    showScreen(id,button);
+}
+
+/* =========================================
+   MOBILE SIDEBAR
+========================================= */
+
+function toggleSidebar(){
+
+    document.getElementById("sidebar")
+        .classList.toggle("open");
+
+}
+
+/* =========================================
+   TOAST
+========================================= */
+
+let toastTimer;
+
+function showToast(message){
+
+    const toast=document.getElementById("toast");
+
+    toast.textContent=message;
+    toast.classList.add("show");
+
+    clearTimeout(toastTimer);
+
+    toastTimer=setTimeout(()=>{
+        toast.classList.remove("show");
+    },2500);
+}
+
+/* =========================================
+   THEME
+========================================= */
+
+let lightMode=false;
+
+function toggleTheme(){
+
+    lightMode=!lightMode;
+
+    if(lightMode){
+
+        document.documentElement.style.setProperty(
+            "--bg","#edf4fa"
+        );
+
+        document.documentElement.style.setProperty(
+            "--text","#102033"
+        );
+
+        document.documentElement.style.setProperty(
+            "--muted","#607187"
+        );
+
+        document.body.style.background="#edf4fa";
+
+        showToast("Light theme enabled");
+
+    }else{
+
+        document.documentElement.style.setProperty(
+            "--bg","#070b12"
+        );
+
+        document.documentElement.style.setProperty(
+            "--text","#edf6ff"
+        );
+
+        document.documentElement.style.setProperty(
+            "--muted","#7f91a8"
+        );
+
+        document.body.style.background="";
+
+        showToast("Dark theme enabled");
+
+    }
+
+}
+
+/* =========================================
+   VOICE
+========================================= */
+
+let voiceAlerts=true;
+
+function startVoice(){
+
+    const SpeechRecognition =
+        window.SpeechRecognition ||
+        window.webkitSpeechRecognition;
+
+    if(!SpeechRecognition){
+
+        showToast("Speech recognition is not supported");
+
+        return;
+    }
+
+    const recognition=new SpeechRecognition();
+
+    recognition.lang="en-IN";
+    recognition.interimResults=false;
+
+    document.getElementById("voiceStatus").textContent="LISTENING";
+
+    recognition.start();
+
+    recognition.onresult=function(event){
+
+        const text=event.results[0][0].transcript;
+
+        document.getElementById("transcript").innerHTML=
+            "<strong>You:</strong> "+text;
+
+        processVoiceCommand(text);
+
+    };
+
+    recognition.onerror=function(){
+
+        document.getElementById("voiceStatus").textContent="OFF";
+
+    };
+
+    recognition.onend=function(){
+
+        document.getElementById("voiceStatus").textContent="OFF";
+
+    };
+
+}
+
+function processVoiceCommand(text){
+
+    const command=text.toLowerCase();
+
+    let answer="I am waiting for live VaxGuard telemetry.";
+
+    if(command.includes("temperature")){
+
+        answer="The current temperature is "+
+            document.getElementById("tempValue").textContent+
+            " degrees Celsius.";
+
+    }
+
+    else if(command.includes("risk")){
+
+        answer="The current risk score is "+
+            document.getElementById("riskValue").textContent+".";
+
+    }
+
+    else if(command.includes("vibration")){
+
+        answer="The current vibration status is "+
+            document.getElementById("vibrationValue").textContent+".";
+
+    }
+
+    else if(command.includes("safe")){
+
+        answer="Current cold-chain condition is "+
+            document.getElementById("conditionValue").textContent+".";
+
+    }
+
+    document.getElementById("transcript").innerHTML=
+        "<strong>VaxGuard:</strong> "+answer;
+
+    if("speechSynthesis" in window && voiceAlerts){
+
+        const speech=new SpeechSynthesisUtterance(answer);
+
+        speech.rate=.95;
+
+        window.speechSynthesis.speak(speech);
+
+    }
+
+}
+
+function toggleVoiceAlerts(){
+
+    voiceAlerts=!voiceAlerts;
+
+    document.getElementById("voiceAlertText").textContent=
+        voiceAlerts ? "ON" : "OFF";
+
+    showToast(
+        voiceAlerts
+        ? "Voice alerts enabled"
+        : "Voice alerts disabled"
+    );
+
+}
+
+/* =========================================
+   LOCATION
+========================================= */
+
+function getLocation(){
+
+    if(!navigator.geolocation){
+
+        showToast("Browser location unavailable");
+
+        return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+
+        position => {
+
+            const lat=position.coords.latitude.toFixed(5);
+            const lon=position.coords.longitude.toFixed(5);
+
+            showToast(
+                "Location: "+lat+", "+lon
+            );
+
+        },
+
+        () => {
+
+            showToast("Location permission unavailable");
+
+        }
+
+    );
+
+}
+
+/* =========================================
+   SETTINGS
+========================================= */
+
+function saveSettings(){
+
+    const name=document.getElementById("deviceName").value;
+    const id=document.getElementById("deviceId").value;
+
+    localStorage.setItem("vaxguardDeviceName",name);
+    localStorage.setItem("vaxguardDeviceId",id);
+
+    showToast("Settings saved locally");
+
+}
+
+function loadSettings(){
+
+    const name=localStorage.getItem("vaxguardDeviceName");
+    const id=localStorage.getItem("vaxguardDeviceId");
+
+    if(name){
+        document.getElementById("deviceName").value=name;
+    }
+
+    if(id){
+        document.getElementById("deviceId").value=id;
+    }
+
+}
+
+/* =========================================
+   TOGGLES
+========================================= */
+
+function toggleSwitch(element){
+
+    element.classList.toggle("on");
+
+}
+
+/* =========================================
+   REPORT
+========================================= */
+
+function generateReport(){
+
+    document.getElementById("reportTitle")
+        .textContent="VaxGuard report generated";
+
+    document.getElementById("reportText")
+        .textContent=
+        "Report ready for current telemetry, alerts, risk and system activity.";
+
+    showToast("Report generated");
+
+}
+
+/* =========================================
+   SELF TEST
+========================================= */
+
+function runSelfTest(){
+
+    const rows=
+        document.querySelectorAll("#selfTestList .list-row");
+
+    rows.forEach((row,index)=>{
+
+        const badge=row.querySelector(".badge");
+        const sub=row.querySelector(".list-sub");
+
+        setTimeout(()=>{
+
+            badge.textContent="PASS";
+            badge.className="badge badge-safe";
+
+            sub.textContent="Diagnostic completed successfully";
+
+        },500*(index+1));
+
+    });
+
+    showToast("Self-test started");
+
+}
+
+/* =========================================
+   EXPORT
+========================================= */
+
+function downloadCSV(){
+
+    const csv=
+`time,type,severity,temperature,mode,message
+${new Date().toISOString()},system,INFO,--,--,System export`;
+
+    const blob=new Blob([csv],{
+        type:"text/csv"
+    });
+
+    const url=URL.createObjectURL(blob);
+
+    const a=document.createElement("a");
+
+    a.href=url;
+    a.download="vaxguard-audit.csv";
+
+    a.click();
+
+    URL.revokeObjectURL(url);
+
+}
+
+function downloadJSON(){
+
+    const data=[{
+
+        time:new Date().toISOString(),
+        type:"system",
+        severity:"INFO",
+        temperature:null,
+        mode:null,
+        message:"System export"
+
+    }];
+
+    const blob=new Blob(
+        [JSON.stringify(data,null,2)],
+        {type:"application/json"}
+    );
+
+    const url=URL.createObjectURL(blob);
+
+    const a=document.createElement("a");
+
+    a.href=url;
+    a.download="vaxguard-audit.json";
+
+    a.click();
+
+    URL.revokeObjectURL(url);
+
+}
+
+/* =========================================
+   DEMO TELEMETRY
+========================================= */
+
+let demoTemperature=5.0;
+let demoHumidity=55;
+let demoVibration="NORMAL";
+let demoRisk=12;
+let demoCondition="SAFE";
+
+function updateDemo(){
+
+    document.getElementById("tempValue").textContent=
+        demoTemperature.toFixed(1);
+
+    document.getElementById("humidityValue").textContent=
+        demoHumidity.toFixed(0);
+
+    document.getElementById("vibrationValue").textContent=
+        demoVibration;
+
+    document.getElementById("riskValue").textContent=
+        demoRisk;
+
+    document.getElementById("conditionValue").textContent=
+        demoCondition;
+
+    document.getElementById("liveTemp").textContent=
+        demoTemperature.toFixed(1);
+
+    document.getElementById("liveHumidity").textContent=
+        demoHumidity.toFixed(0);
+
+    document.getElementById("liveVibration").textContent=
+        demoVibration;
+
+    document.getElementById("liveRisk").textContent=
+        demoRisk;
+
+    document.getElementById("riskBig").textContent=
+        demoRisk;
+
+    document.getElementById("riskLabel").textContent=
+        demoRisk < 30 ? "LOW RISK" :
+        demoRisk < 60 ? "MODERATE RISK" :
+        "HIGH RISK";
+
+    document.getElementById("topMode").textContent="DEMO";
+    document.getElementById("topState").textContent=demoCondition;
+    document.getElementById("liveMode").textContent="DEMO";
+
+    document.getElementById("connectionText").textContent=
+        "demo telemetry";
+
+    document.getElementById("connectionDot").style.background=
+        "var(--green)";
+
+    document.getElementById("connectionDot").style.boxShadow=
+        "0 0 12px var(--green)";
+
+    document.getElementById("lastUpdated").textContent=
+        new Date().toLocaleTimeString();
+
+}
+
+loadSettings();
+updateDemo();
+
+</script>
+
 </body>
 </html>
+```
