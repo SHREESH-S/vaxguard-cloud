@@ -1,7 +1,7 @@
 {
-  "name": "vaxguard-cloud",
+  "name": "vaxguard-pro-backend",
   "version": "4.0.0",
-  "description": "VAXGUARD Pro - Industry-Grade AI Cold-Chain Guardian Backend & Web Dashboard",
+  "description": "VAXGUARD Pro Enterprise Cold-Chain Guardian Backend",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
