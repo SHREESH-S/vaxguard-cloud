@@ -1,0 +1,33 @@
+{
+  "system": {
+    "name": "VaxGuard",
+    "version": "2.0.0",
+    "defaultMode": "DEMO"
+  },
+  "thresholds": {
+    "tempMin": 2.0,
+    "tempMax": 8.0,
+    "tempWarningMargin": 1.0,
+    "tempHighMargin": 2.5,
+    "humidityMin": 30,
+    "humidityMax": 80,
+    "vibrationEventsForWarning": 2,
+    "vibrationEventsForHigh": 4,
+    "vibrationEventsForCritical": 6,
+    "vibrationWindowSeconds": 120
+  },
+  "risk": {
+    "historyWindow": 30,
+    "trendWindow": 8,
+    "anomalyZScoreThreshold": 2.2
+  },
+  "escalation": {
+    "criticalConfirmationSeconds": 30,
+    "callCooldownMinutes": 15,
+    "maxCallAttempts": 3
+  },
+  "server": {
+    "eventRetentionDays": 30,
+    "maxHistoryPoints": 500
+  }
+}

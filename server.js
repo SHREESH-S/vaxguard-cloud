@@ -1,304 +1,1007 @@
+/* =========================================================================
+   VAXGUARD SERVER  v2.0.0
+   Unified event-processing architecture for REAL MODE and DEMO MODE.
+   Every event (from the ESP32 real sensors OR a demo/simulated command)
+   passes through the exact same processEvent() pipeline.
+   ========================================================================= */
+ 
+require('dotenv').config();
+ 
+const fs = require('fs');
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
-const path = require('path');
-const crypto = require('crypto');
+const http = require('http');
+const { Server: SocketIOServer } = require('socket.io');
 const fetch = require('node-fetch');
 const { v4: uuidv4 } = require('uuid');
-const low = require('lowdb');
-const FileSync = require('lowdb/adapters/FileSync');
-
-const app = express();
-app.set('trust proxy', true);
-app.use(cors());
-app.use(express.json({ limit: '256kb' }));
-
-const ADMIN_PIN = process.env.ADMIN_PIN || '2468'; // change via env var in production
-
-const adapter = new FileSync(path.join(__dirname, 'db.json'));
-const db = low(adapter);
-db.defaults({
-  telemetry: [], events: [], audit: [],
-  demo: { active: false, level: 'OFF' },
-  config: {
-    tempLower: 2.0, tempUpper: 8.0, tempWarningBand: 1.0,
-    warningDurationMs: 20000, criticalDurationMs: 60000,
-    deviceName: 'VaxGuard Unit 1', configVersion: 1,
-    location: { lat: null, lng: null, label: '', source: null, accuracy: null }
-  }
-}).write();
-
-function requirePin(req, res, next) {
-  if ((req.body && req.body.pin) === ADMIN_PIN || req.query.pin === ADMIN_PIN) return next();
-  return res.status(403).json({ error: 'Invalid admin PIN' });
+ 
+let twilioLib = null;
+try { twilioLib = require('twilio'); } catch (e) { twilioLib = null; }
+ 
+/* ---------------------------------------------------------------------- */
+/* CONFIG                                                                  */
+/* ---------------------------------------------------------------------- */
+ 
+const CFG = JSON.parse(fs.readFileSync(path.join(__dirname, 'config.json'), 'utf8'));
+ 
+const ENV = {
+  PORT: process.env.PORT || 3000,
+  NODE_ENV: process.env.NODE_ENV || 'development',
+  TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN || '',
+  TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID || '',
+  AI_API_KEY: process.env.AI_API_KEY || '',
+  ALERT_CALL_ENABLED: (process.env.ALERT_CALL_ENABLED || 'false').toLowerCase() === 'true',
+  ALERT_CALL_NUMBER: process.env.ALERT_CALL_NUMBER || '',
+  CALL_PROVIDER_ACCOUNT_SID: process.env.CALL_PROVIDER_ACCOUNT_SID || '',
+  CALL_PROVIDER_AUTH_TOKEN: process.env.CALL_PROVIDER_AUTH_TOKEN || '',
+  CALL_PROVIDER_NUMBER: process.env.CALL_PROVIDER_NUMBER || '',
+  PUBLIC_BASE_URL: process.env.PUBLIC_BASE_URL || '',
+  DEMO_CALL_ENABLED: (process.env.DEMO_CALL_ENABLED || 'false').toLowerCase() === 'true',
+  CRITICAL_CONFIRMATION_SECONDS: parseInt(process.env.CRITICAL_CONFIRMATION_SECONDS || CFG.escalation.criticalConfirmationSeconds, 10),
+  CALL_COOLDOWN_MINUTES: parseInt(process.env.CALL_COOLDOWN_MINUTES || CFG.escalation.callCooldownMinutes, 10),
+  MAX_CALL_ATTEMPTS: parseInt(process.env.MAX_CALL_ATTEMPTS || CFG.escalation.maxCallAttempts, 10),
+  DEVICE_KEY: process.env.DEVICE_KEY || ''
+};
+ 
+let twilioClient = null;
+if (twilioLib && ENV.CALL_PROVIDER_ACCOUNT_SID && ENV.CALL_PROVIDER_AUTH_TOKEN) {
+  try { twilioClient = twilioLib(ENV.CALL_PROVIDER_ACCOUNT_SID, ENV.CALL_PROVIDER_AUTH_TOKEN); }
+  catch (e) { console.error('[VaxGuard] Twilio client init failed:', e.message); twilioClient = null; }
 }
-function pushAudit({ actor, action, details }) {
-  const last = db.get('audit').last().value();
-  const prevHash = last ? last.hash : '0';
-  const timestamp = Date.now();
-  const payload = JSON.stringify({ actor: actor||null, action, details: details||null, timestamp, prevHash });
-  const hash = crypto.createHash('sha256').update(payload).digest('hex');
-  const entry = { id: uuidv4(), timestamp, actor: actor||null, action, details: details||null, prevHash, hash };
-  db.get('audit').push(entry).write();
+ 
+/* ---------------------------------------------------------------------- */
+/* PERSISTENCE (simple JSON files - good enough for a prototype)          */
+/* ---------------------------------------------------------------------- */
+ 
+const DATA_DIR = path.join(__dirname, 'data');
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+ 
+function dataFile(name) { return path.join(DATA_DIR, name); }
+ 
+function loadJSON(name, fallback) {
+  try {
+    const p = dataFile(name);
+    if (!fs.existsSync(p)) return fallback;
+    return JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch (e) { return fallback; }
+}
+ 
+function saveJSON(name, data) {
+  try { fs.writeFileSync(dataFile(name), JSON.stringify(data, null, 2)); }
+  catch (e) { console.error('[VaxGuard] persistence write failed:', e.message); }
+}
+ 
+/* ---------------------------------------------------------------------- */
+/* GLOBAL STATE                                                           */
+/* ---------------------------------------------------------------------- */
+ 
+const state = {
+  mode: CFG.system.defaultMode || 'DEMO',           // 'REAL' | 'DEMO'
+  wifiOk: true,
+  latest: null,                                      // last processed reading/event
+  history: loadJSON('history.json', []),             // rolling readings for graph/prediction
+  audit: loadJSON('audit.json', []),                 // full audit trail
+  incidents: loadJSON('incidents.json', []),         // incident lifecycle records
+  explanationHistory: loadJSON('explanations.json', []),
+  incidentCounter: loadJSON('counter.json', { n: 100 }).n,
+  currentIncidentId: null,
+  callState: {
+    criticalSince: null,
+    lastCallAt: null,
+    attemptsForCurrentIncident: 0,
+    cooldownUntil: null,
+    lastStatus: 'CALL READY'
+  },
+  demoBaseline: { temperature: 5.0, humidity: 55, vibration: false, sensorFault: false }
+};
+ 
+// map incidentId (or 'TEST') -> { message, mode }  used by the Twilio TwiML endpoint
+const callMessages = new Map();
+ 
+function persistAll() {
+  saveJSON('history.json', state.history.slice(-CFG.server.maxHistoryPoints));
+  saveJSON('audit.json', state.audit.slice(-2000));
+  saveJSON('incidents.json', state.incidents.slice(-500));
+  saveJSON('explanations.json', state.explanationHistory.slice(-500));
+  saveJSON('counter.json', { n: state.incidentCounter });
+}
+ 
+/* ---------------------------------------------------------------------- */
+/* SMALL MATH HELPERS                                                     */
+/* ---------------------------------------------------------------------- */
+ 
+const avg = (arr) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0);
+const stddev = (arr, m) => {
+  if (arr.length < 2) return 0;
+  const mean = m !== undefined ? m : avg(arr);
+  return Math.sqrt(avg(arr.map((x) => (x - mean) ** 2)));
+};
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const nowIso = () => new Date().toISOString();
+ 
+/* ---------------------------------------------------------------------- */
+/* SEVERITY LEVELS                                                        */
+/* ---------------------------------------------------------------------- */
+ 
+const SEVERITY = [
+  { level: 0, label: 'NORMAL' },
+  { level: 1, label: 'INFORMATION' },
+  { level: 2, label: 'WARNING' },
+  { level: 3, label: 'HIGH_RISK' },
+  { level: 4, label: 'CRITICAL' }
+];
+ 
+function severityFromRisk(riskScore) {
+  if (riskScore >= 80) return SEVERITY[4];
+  if (riskScore >= 60) return SEVERITY[3];
+  if (riskScore >= 40) return SEVERITY[2];
+  if (riskScore >= 20) return SEVERITY[1];
+  return SEVERITY[0];
+}
+ 
+/* ---------------------------------------------------------------------- */
+/* RISK / CONDITION / SENSOR HEALTH / CONFIDENCE                          */
+/* ---------------------------------------------------------------------- */
+ 
+function countRecentVibrations(windowSeconds) {
+  const cutoff = Date.now() - windowSeconds * 1000;
+  return state.history.filter((h) => h.vibration && new Date(h.timestamp).getTime() >= cutoff).length;
+}
+ 
+function calcRiskScore(reading, vibCountRecent) {
+  const T = CFG.thresholds;
+  let risk = 0;
+  const t = reading.temperature;
+ 
+  if (typeof t === 'number') {
+    if (t < T.tempMin) risk += Math.min(65, (T.tempMin - t) * 18);
+    else if (t > T.tempMax) risk += Math.min(70, (t - T.tempMax) * 15);
+  }
+ 
+  if (reading.vibration) risk += 10;
+  if (vibCountRecent >= T.vibrationEventsForCritical) risk += 35;
+  else if (vibCountRecent >= T.vibrationEventsForHigh) risk += 22;
+  else if (vibCountRecent >= T.vibrationEventsForWarning) risk += 10;
+ 
+  if (typeof reading.humidity === 'number' &&
+      (reading.humidity < T.humidityMin || reading.humidity > T.humidityMax)) {
+    risk += 8;
+  }
+ 
+  if (reading.sensorFault) risk += 15;
+ 
+  return Math.round(clamp(risk, 0, 100));
+}
+ 
+function calcConditionScore(riskScore) {
+  return Math.round(clamp(100 - riskScore * 0.95, 0, 100));
+}
+ 
+function calcSensorHealth(reading) {
+  let health = 100;
+  if (reading.sensorFault) health -= 45;
+  if (!state.wifiOk) health -= 15;
+  if (state.mode === 'DEMO') health -= 5; // simulated data is inherently "less physical"
+  return Math.round(clamp(health, 0, 100));
+}
+ 
+function calcConfidence(sensorHealth, historyLen) {
+  const historyFactor = Math.min(historyLen, 20) / 20 * 30;
+  const wifiFactor = state.wifiOk ? 20 : 5;
+  return Math.round(clamp(sensorHealth * 0.5 + historyFactor + wifiFactor, 0, 100));
+}
+ 
+/* ---------------------------------------------------------------------- */
+/* PREDICTION / TREND / ANOMALY                                          */
+/* ---------------------------------------------------------------------- */
+ 
+function calcTrend() {
+  const scores = state.history.slice(-CFG.risk.trendWindow).map((h) => h.riskScore);
+  if (scores.length < 3) {
+    return { trend: 'STABLE', slope: 0, predictedRisk: scores[scores.length - 1] || 0, confidence: 40 };
+  }
+  const half = Math.floor(scores.length / 2);
+  const firstAvg = avg(scores.slice(0, half));
+  const secondAvg = avg(scores.slice(half));
+  const diff = secondAvg - firstAvg;
+  let trend = 'STABLE';
+  if (diff > 5) trend = 'WORSENING';
+  else if (diff < -5) trend = 'IMPROVING';
+  const predictedRisk = Math.round(clamp(secondAvg + diff, 0, 100));
+  const confidence = Math.round(clamp(50 + scores.length * 2, 0, 95));
+  return { trend, slope: Number(diff.toFixed(2)), predictedRisk, confidence };
+}
+ 
+function detectAnomaly(latestTemp) {
+  const temps = state.history.slice(-CFG.risk.historyWindow).map((h) => h.temperature).filter((x) => typeof x === 'number');
+  if (temps.length < 5 || typeof latestTemp !== 'number') return { isAnomaly: false, z: 0 };
+  const m = avg(temps);
+  const sd = stddev(temps, m) || 0.001;
+  const z = (latestTemp - m) / sd;
+  return { isAnomaly: Math.abs(z) >= CFG.risk.anomalyZScoreThreshold, z: Number(z.toFixed(2)) };
+}
+ 
+function calcAlertPriority({ severityLevel, magnitude, vibCountRecent, trend, confidence }) {
+  let p = severityLevel * 20;
+  p += Math.min(15, magnitude * 2);
+  p += Math.min(10, vibCountRecent * 2);
+  if (trend === 'WORSENING') p += 10;
+  if (confidence < 50) p -= 10;
+  p = Math.round(clamp(p, 0, 100));
+  let label = 'LOW';
+  if (p >= 80) label = 'CRITICAL';
+  else if (p >= 60) label = 'HIGH';
+  else if (p >= 35) label = 'MEDIUM';
+  return { priorityScore: p, priorityLabel: label };
+}
+ 
+function correlateEvents() {
+  const recent = state.history.slice(-20);
+  if (recent.length < 3) return null;
+  const vibs = recent.filter((h) => h.vibration).length;
+  const last = recent[recent.length - 1];
+  if (vibs >= 2 && last && last.riskScore >= 55) {
+    return 'Repeated vibration events were temporally associated with the recent rise in risk score. This is an observed pattern, not confirmed causation.';
+  }
+  return null;
+}
+ 
+/* ---------------------------------------------------------------------- */
+/* AI EXPLANATION (rule-based, optionally enriched by a real LLM call)    */
+/* ---------------------------------------------------------------------- */
+ 
+function ruleBasedExplanation(reading, trend) {
+  const T = CFG.thresholds;
+  const parts = [];
+  const prefix = state.mode === 'DEMO'
+    ? 'Demo simulation indicates that'
+    : 'Monitoring data indicates that';
+ 
+  if (typeof reading.temperature === 'number') {
+    if (reading.temperature > T.tempMax) {
+      parts.push(`${prefix} the current temperature (${reading.temperature}°C) is above the configured upper monitoring limit of ${T.tempMax}°C.`);
+    } else if (reading.temperature < T.tempMin) {
+      parts.push(`${prefix} the current temperature (${reading.temperature}°C) is below the configured lower monitoring limit of ${T.tempMin}°C.`);
+    } else {
+      parts.push(`${prefix} the current temperature (${reading.temperature}°C) is within the configured monitoring range.`);
+    }
+  }
+  if (reading.vibration) parts.push('Vibration activity has been detected on the monitored unit.');
+  if (reading.sensorFault) parts.push('A sensor fault condition has been reported, which reduces measurement confidence.');
+  if (trend.trend === 'WORSENING') parts.push('The recent trend shows the risk score increasing.');
+  else if (trend.trend === 'IMPROVING') parts.push('The recent trend shows the risk score decreasing toward normal.');
+  else parts.push('The recent trend shows the risk score holding relatively stable.');
+ 
+  return parts.join(' ');
+}
+ 
+async function callAnthropicEnhance(promptText) {
+  if (!ENV.AI_API_KEY) return null;
+  try {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 6000);
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ENV.AI_API_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 220,
+        messages: [{ role: 'user', content: promptText }]
+      }),
+      signal: controller.signal
+    });
+    clearTimeout(t);
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const text = (data.content || []).filter((c) => c.type === 'text').map((c) => c.text).join(' ').trim();
+    return text || null;
+  } catch (e) {
+    return null;
+  }
+}
+ 
+async function buildAIExplanation(reading, severity, trend) {
+  const base = ruleBasedExplanation(reading, trend);
+  if (!ENV.AI_API_KEY) return { text: base, aiEnhanced: false };
+ 
+  const prompt = `You are the explanation module of a vaccine cold-chain monitoring prototype called VaxGuard. ` +
+    `Mode: ${state.mode}. Severity: ${severity.label}. Temperature: ${reading.temperature}C. Vibration: ${reading.vibration}. ` +
+    `Risk trend: ${trend.trend}. Write 2-3 short factual sentences explaining the situation to an operator. ` +
+    `Never claim the vaccine is definitely damaged or that AI has medically confirmed spoilage. ` +
+    `If mode is DEMO, make clear this is simulated data, not a live physical measurement.`;
+ 
+  const enhanced = await callAnthropicEnhance(prompt);
+  return enhanced ? { text: enhanced, aiEnhanced: true } : { text: base, aiEnhanced: false };
+}
+ 
+/* ---------------------------------------------------------------------- */
+/* RECOMMENDATIONS / ACTION PLANS                                         */
+/* ---------------------------------------------------------------------- */
+ 
+function buildRecommendation(severity) {
+  switch (severity.label) {
+    case 'CRITICAL':
+      return 'Inspect the monitored environment immediately and follow your organization\'s validated cold-chain deviation procedure.';
+    case 'HIGH_RISK':
+      return 'Check the monitored unit soon and confirm the storage conditions are being restored to the configured range.';
+    case 'WARNING':
+      return 'Monitor the unit closely over the next readings; no immediate action required if the trend improves.';
+    case 'INFORMATION':
+      return 'No action required. Continue routine monitoring.';
+    default:
+      return 'Conditions are within the normal configured range. Continue routine monitoring.';
+  }
+}
+ 
+function buildActionPlan(severity, vibrationInvolved) {
+  const common = {
+    whatHappened: `System severity reached ${severity.label} based on the current risk score.`,
+    whatToCheck: vibrationInvolved
+      ? 'Check the physical stability of the storage unit and whether it was recently moved, bumped, or opened.'
+      : 'Check the storage unit door seal, power supply, and thermostat setting.',
+    whatToMonitor: 'Monitor temperature, vibration frequency, and the risk trend over the next several readings.',
+    whenToEscalate: 'Escalate to a supervisor if the condition does not begin improving within a few monitoring cycles.',
+    whenRecoveryDetected: 'Recovery is considered detected once severity drops back to NORMAL and remains stable.'
+  };
+  return common;
+}
+ 
+/* ---------------------------------------------------------------------- */
+/* VOICE / CALL MESSAGE GENERATION                                        */
+/* ---------------------------------------------------------------------- */
+ 
+function buildVoiceMessage(reading, severity) {
+  const demoTag = state.mode === 'DEMO' ? 'demonstration ' : '';
+  if (severity.label !== 'CRITICAL') {
+    return `VaxGuard ${demoTag}notice. Condition status is now ${severity.label.replace('_', ' ')}.`;
+  }
+  if (reading.vibration) {
+    return `VaxGuard ${demoTag}critical alert. Repeated vibration activity and abnormal environmental conditions have been detected. Please inspect the monitored system.`;
+  }
+  return `VaxGuard ${demoTag}critical alert. A critical monitored cold-chain condition has been detected. Please inspect the monitored environment.`;
+}
+ 
+function buildCallMessage(reading, severity) {
+  const demoTag = state.mode === 'DEMO' ? 'demonstration ' : '';
+  let msg;
+  if (reading.vibration) {
+    msg = `VaxGuard ${demoTag}critical alert. Repeated vibration activity and abnormal environmental conditions have been detected. Please inspect the monitored system.`;
+  } else {
+    msg = `VaxGuard ${demoTag}critical alert. A serious cold-chain condition has been detected. Temperature is outside the configured monitoring limit. Please inspect the monitored environment and follow your organization's validated cold-chain procedure.`;
+  }
+  msg += ' This is an automated prototype notification and is not a substitute for validated emergency, pharmaceutical, or medical procedures.';
+  return msg;
+}
+ 
+/* ---------------------------------------------------------------------- */
+/* TELEGRAM                                                                */
+/* ---------------------------------------------------------------------- */
+ 
+async function sendTelegram(reading, severity, riskScore, conditionScore, reasonText) {
+  if (!ENV.TELEGRAM_BOT_TOKEN || !ENV.TELEGRAM_CHAT_ID) {
+    audit('TELEGRAM_SKIPPED', { reason: 'not configured' });
+    return { ok: false, reason: 'not_configured' };
+  }
+  const text =
+`VAXGUARD ${severity.label} ALERT
+ 
+MODE: ${state.mode}
+ 
+Severity: ${severity.label}
+Temperature: ${reading.temperature}°C
+Vibration: ${reading.vibration ? 'DETECTED' : 'NORMAL'}
+Risk: ${riskScore}/100
+Condition: ${conditionScore}/100
+ 
+Reason:
+${reasonText}
+ 
+Action:
+${buildRecommendation(severity)}`;
+ 
+  try {
+    const resp = await fetch(`https://api.telegram.org/bot${ENV.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: ENV.TELEGRAM_CHAT_ID, text })
+    });
+    const ok = resp.ok;
+    audit(ok ? 'TELEGRAM_SENT' : 'TELEGRAM_FAILED', { status: resp.status });
+    return { ok };
+  } catch (e) {
+    audit('TELEGRAM_FAILED', { error: e.message });
+    return { ok: false, reason: e.message };
+  }
+}
+ 
+/* ---------------------------------------------------------------------- */
+/* AUTOMATIC CALL ESCALATION                                              */
+/* ---------------------------------------------------------------------- */
+ 
+function callEnabledForCurrentMode() {
+  return state.mode === 'DEMO' ? ENV.DEMO_CALL_ENABLED : ENV.ALERT_CALL_ENABLED;
+}
+ 
+async function placeCall(toNumber, incidentKey, messageText, isTest) {
+  callMessages.set(incidentKey, { message: messageText, mode: state.mode });
+ 
+  if (!twilioClient || !ENV.CALL_PROVIDER_NUMBER || !toNumber || !ENV.PUBLIC_BASE_URL) {
+    audit('CALL_FAILED', { reason: 'call provider not fully configured', incidentKey, isTest });
+    return { ok: false, reason: 'not_configured' };
+  }
+  try {
+    const call = await twilioClient.calls.create({
+      to: toNumber,
+      from: ENV.CALL_PROVIDER_NUMBER,
+      url: `${ENV.PUBLIC_BASE_URL}/voice/twiml/${incidentKey}`
+    });
+    audit('CALL_TRIGGERED', { sid: call.sid, incidentKey, isTest, to: maskNumber(toNumber) });
+    return { ok: true, sid: call.sid };
+  } catch (e) {
+    audit('CALL_FAILED', { error: e.message, incidentKey, isTest });
+    return { ok: false, reason: e.message };
+  }
+}
+ 
+function maskNumber(n) {
+  if (!n || n.length < 4) return '****';
+  return n.slice(0, -4).replace(/./g, '*') + n.slice(-4);
+}
+ 
+async function attemptCriticalCallEscalation(incident, reading, severity) {
+  const cs = state.callState;
+  const enabled = callEnabledForCurrentMode();
+ 
+  if (!enabled) { cs.lastStatus = 'CALLING DISABLED'; return; }
+ 
+  const now = Date.now();
+  if (cs.cooldownUntil && now < cs.cooldownUntil) { cs.lastStatus = 'COOLDOWN ACTIVE'; return; }
+  if (cs.attemptsForCurrentIncident >= ENV.MAX_CALL_ATTEMPTS) { cs.lastStatus = 'CALL FAILED'; return; }
+ 
+  cs.lastStatus = 'CALL TRIGGERED';
+  const messageText = buildCallMessage(reading, severity);
+  const result = await placeCall(ENV.ALERT_CALL_NUMBER, incident.id, messageText, false);
+ 
+  cs.lastCallAt = nowIso();
+  cs.attemptsForCurrentIncident += 1;
+  cs.cooldownUntil = now + ENV.CALL_COOLDOWN_MINUTES * 60000;
+  cs.lastStatus = result.ok ? 'CALL COMPLETED' : 'CALL FAILED';
+ 
+  incident.callLog = incident.callLog || [];
+  incident.callLog.push({
+    timestamp: nowIso(), reason: 'CRITICAL_CONFIRMED', severity: severity.label,
+    temperature: reading.temperature, vibration: reading.vibration,
+    riskScore: reading.riskScore, conditionScore: reading.conditionScore,
+    result: cs.lastStatus
+  });
+ 
+  if (!result.ok) {
+    await sendTelegram(reading, severity, reading.riskScore, reading.conditionScore,
+      'A critical event was detected, but the responsible-operator call could not be completed.');
+  }
+  broadcast();
+}
+ 
+/* ---------------------------------------------------------------------- */
+/* INCIDENT LIFECYCLE                                                     */
+/* ---------------------------------------------------------------------- */
+ 
+function nextIncidentId() {
+  state.incidentCounter += 1;
+  const year = new Date().getFullYear();
+  return `VG-${year}-${String(state.incidentCounter).padStart(6, '0')}`;
+}
+ 
+function getCurrentIncident() {
+  if (!state.currentIncidentId) return null;
+  return state.incidents.find((i) => i.id === state.currentIncidentId) || null;
+}
+ 
+function manageIncidentLifecycle(severity, reading) {
+  let incident = getCurrentIncident();
+ 
+  if (severity.level >= 2 && !incident) {
+    incident = {
+      id: nextIncidentId(),
+      mode: state.mode,
+      openedAt: nowIso(),
+      stage: 'OPENED',
+      stageHistory: [{ stage: 'OPENED', timestamp: nowIso() }],
+      severityPeak: severity.level,
+      peakAt: nowIso(),
+      events: [],
+      acknowledgedBy: null,
+      acknowledgedAt: null,
+      resolvedAt: null,
+      recoveryDetectedAt: null,
+      recoveryDurationSec: null,
+      callStatus: 'CALL READY',
+      callLog: []
+    };
+    state.incidents.push(incident);
+    state.currentIncidentId = incident.id;
+    state.callState.attemptsForCurrentIncident = 0;
+    state.callState.criticalSince = null;
+    pushStage(incident, 'ACTIVE');
+    audit('INCIDENT_OPENED', { incidentId: incident.id, severity: severity.label });
+  }
+ 
+  if (incident) {
+    if (severity.level > incident.severityPeak) {
+      incident.severityPeak = severity.level;
+      incident.peakAt = nowIso();
+      if (severity.level >= 3 && incident.stage !== 'ESCALATED') pushStage(incident, 'ESCALATED');
+    }
+    incident.events.push({
+      timestamp: nowIso(), temperature: reading.temperature, humidity: reading.humidity,
+      vibration: reading.vibration, riskScore: reading.riskScore, conditionScore: reading.conditionScore,
+      severity: severity.label
+    });
+    if (incident.events.length > 300) incident.events.shift();
+ 
+    // Recovery detection
+    if (severity.level <= 1 && incident.severityPeak >= 2) {
+      if (incident.stage !== 'RECOVERING' && incident.stage !== 'RESOLVED') {
+        pushStage(incident, 'RECOVERING');
+        incident.recoveryStartedAt = nowIso();
+        audit('INCIDENT_RECOVERING', { incidentId: incident.id });
+      }
+      if (severity.level === 0 && incident.stage === 'RECOVERING') {
+        incident.stage = 'RESOLVED';
+        incident.stageHistory.push({ stage: 'RESOLVED', timestamp: nowIso() });
+        incident.resolvedAt = nowIso();
+        incident.recoveryDetectedAt = nowIso();
+        const peakTime = new Date(incident.peakAt).getTime();
+        incident.recoveryDurationSec = Math.round((Date.now() - peakTime) / 1000);
+        audit('INCIDENT_RESOLVED', { incidentId: incident.id, recoveryDurationSec: incident.recoveryDurationSec });
+        state.currentIncidentId = null;
+        state.callState.criticalSince = null;
+        state.callState.attemptsForCurrentIncident = 0;
+      }
+    }
+  }
+  return incident;
+}
+ 
+function pushStage(incident, stage) {
+  incident.stage = stage;
+  incident.stageHistory.push({ stage, timestamp: nowIso() });
+  audit('INCIDENT_' + stage, { incidentId: incident.id });
+}
+ 
+/* ---------------------------------------------------------------------- */
+/* AUDIT / EXPLANATION HISTORY                                            */
+/* ---------------------------------------------------------------------- */
+ 
+function audit(event, extra) {
+  const entry = Object.assign({
+    timestamp: nowIso(),
+    mode: state.mode,
+    event
+  }, extra || {});
+  state.audit.push(entry);
+  if (state.audit.length > 3000) state.audit.shift();
+  if (io) io.emit('audit', entry);
   return entry;
 }
-function verifyAuditChain() {
-  const entries = db.get('audit').value();
-  let prevHash = '0';
-  for (const e of entries) {
-    const payload = JSON.stringify({ actor: e.actor, action: e.action, details: e.details, timestamp: e.timestamp, prevHash });
-    if (crypto.createHash('sha256').update(payload).digest('hex') !== e.hash) return { tampered: true, brokenAt: e.id, entriesChecked: entries.length };
-    prevHash = e.hash;
+ 
+function recordExplanation(riskBefore, riskAfter, reasonText) {
+  const entry = { timestamp: nowIso(), mode: state.mode, riskBefore, riskAfter, reason: reasonText };
+  state.explanationHistory.push(entry);
+  if (state.explanationHistory.length > 1000) state.explanationHistory.shift();
+  return entry;
+}
+ 
+/* ---------------------------------------------------------------------- */
+/* CORE UNIVERSAL EVENT ENGINE                                            */
+/* ---------------------------------------------------------------------- */
+ 
+async function processEvent(raw) {
+  // raw: { mode, temperature, humidity, vibration, sensorFault, wifiOk, source }
+  if (raw.mode) state.mode = raw.mode;
+  if (typeof raw.wifiOk === 'boolean') state.wifiOk = raw.wifiOk;
+ 
+  const reading = {
+    timestamp: nowIso(),
+    mode: state.mode,
+    temperature: typeof raw.temperature === 'number' ? raw.temperature : (state.latest ? state.latest.temperature : 5),
+    humidity: typeof raw.humidity === 'number' ? raw.humidity : (state.latest ? state.latest.humidity : 55),
+    vibration: !!raw.vibration,
+    sensorFault: !!raw.sensorFault,
+    source: raw.source || (state.mode === 'DEMO' ? 'DEMO' : 'DHT11+SW420')
+  };
+ 
+  const vibCountRecent = countRecentVibrations(CFG.thresholds.vibrationWindowSeconds);
+  const riskBefore = state.latest ? state.latest.riskScore : 0;
+  const riskScore = calcRiskScore(reading, vibCountRecent);
+  const conditionScore = calcConditionScore(riskScore);
+  const sensorHealth = calcSensorHealth(reading);
+  const severity = severityFromRisk(riskScore);
+  const anomaly = detectAnomaly(reading.temperature);
+ 
+  reading.riskScore = riskScore;
+  reading.conditionScore = conditionScore;
+  reading.sensorHealth = sensorHealth;
+  reading.severity = severity.label;
+  reading.severityLevel = severity.level;
+  reading.vibCountRecent = vibCountRecent;
+  reading.anomaly = anomaly.isAnomaly;
+ 
+  state.history.push(reading);
+  if (state.history.length > CFG.server.maxHistoryPoints) state.history.shift();
+ 
+  const confidence = calcConfidence(sensorHealth, state.history.length);
+  const trend = calcTrend();
+  const priority = calcAlertPriority({
+    severityLevel: severity.level,
+    magnitude: Math.abs(reading.temperature - (reading.temperature > CFG.thresholds.tempMax ? CFG.thresholds.tempMax : CFG.thresholds.tempMin)),
+    vibCountRecent, trend: trend.trend, confidence
+  });
+  const correlation = correlateEvents();
+  const ai = await buildAIExplanation(reading, severity, trend);
+  const recommendation = buildRecommendation(severity);
+  const actionPlan = buildActionPlan(severity, reading.vibration);
+ 
+  reading.confidence = confidence;
+  reading.trend = trend;
+  reading.priority = priority;
+  reading.correlation = correlation;
+  reading.explanation = ai.text;
+  reading.aiEnhanced = ai.aiEnhanced;
+  reading.recommendation = recommendation;
+  reading.actionPlan = actionPlan;
+ 
+  state.latest = reading;
+ 
+  audit(severity.level >= 2 ? severity.label + '_EVENT' : 'READING', {
+    temperature: reading.temperature, humidity: reading.humidity, vibration: reading.vibration,
+    severity: severity.label, riskScore, conditionScore, sensorHealth, confidence,
+    reason: ai.text, recommendation
+  });
+ 
+  if (Math.abs(riskScore - riskBefore) >= 15) {
+    recordExplanation(riskBefore, riskScore, ai.text);
   }
-  return { tampered: false, brokenAt: null, entriesChecked: entries.length };
-}
-
-// ---------------- TELEGRAM ----------------
-const lastAlertByType = {};
-const COOLDOWN_MS = { WARNING: 60000, CRITICAL: 20000, INFO: 300000 };
-async function sendTelegram(type, priority, message) {
-  const token = process.env.TELEGRAM_BOT_TOKEN, chatId = process.env.TELEGRAM_CHAT_ID;
-  if (!token || !chatId) return;
-  const now = Date.now();
-  if (now - (lastAlertByType[type]||0) < (COOLDOWN_MS[priority]||60000)) return;
-  lastAlertByType[type] = now;
-  const icon = priority==='CRITICAL'?'🔴':priority==='INFO'?'🟢':'🟡';
-  try {
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ chat_id: chatId, text: `${icon} VaxGuard ${priority}\n${message}` })
-    });
-  } catch(e) { console.error('[telegram]', e.message); }
-}
-
-// ---------------- STAT HELPERS ----------------
-function runningStats(s){let n=0,m=0,M2=0;for(const x of s){n++;const d=x-m;m+=d/n;M2+=d*(x-m);}return{mean:m,stdDev:Math.sqrt(n>1?M2/(n-1):0),n};}
-function linreg(s){const n=s.length;if(n<2)return{slope:0};let sx=0,sy=0,sxy=0,sxx=0;for(let i=0;i<n;i++){sx+=i;sy+=s[i];sxy+=i*s[i];sxx+=i*i;}return{slope:(n*sxy-sx*sy)/((n*sxx-sx*sx)||1)};}
-
-// ================= 40+ AI / ANALYTICS FEATURES (rule-based, explainable) =================
-function f01_riskScore(state, vib) {
-  let score=0; const reasons=[];
-  if (state==='WATCH'){score+=25;reasons.push('Near band edge');}
-  if (state==='WARNING'){score+=60;reasons.push('Outside safe band');}
-  if (state==='CRITICAL'){score+=90;reasons.push('Critically out of range');}
-  if (state==='SENSOR_FAULT'){score+=40;reasons.push('Sensor fault');}
-  if (vib>=6){score+=15;reasons.push('Abnormal vibration frequency');}
-  return {score:Math.min(100,score),reasons};
-}
-function f02_trend(temps){const{slope}=linreg(temps);return slope>0.02?'RISING':slope<-0.02?'FALLING':'STABLE';}
-function f03_anomaly(temps){const{mean,stdDev,n}=runningStats(temps);const latest=temps[temps.length-1];const z=stdDev?(latest-mean)/stdDev:0;return{isAnomaly:Math.abs(z)>2.5,zScore:+z.toFixed(2),mean,stdDev,n};}
-function f04_eta(temps,cfg){const{slope}=linreg(temps);const latest=temps[temps.length-1];if(Math.abs(slope)<0.005)return{willCross:false,message:'Stable; no crossing predicted.'};const target=slope>0?cfg.tempUpper:cfg.tempLower;const steps=(target-latest)/slope;if(steps<0)return{willCross:false,message:'Trending away from limit.'};const etaSec=Math.round(steps*2);return{willCross:true,etaSeconds:etaSec,message:`At this rate, reaches ${target}°C in ~${Math.round(etaSec/60)} min.`};}
-function f05_hourlyBaseline(records){const b=Array.from({length:24},()=>[]);for(const r of records){if(r.tempValid===false||r.temperature==null)continue;b[new Date(r.receivedAt).getHours()].push(r.temperature);}return b.map((v,h)=>({hour:h,...runningStats(v)}));}
-function f06_patternAnomaly(records,latest){const bucket=f05_hourlyBaseline(records)[new Date().getHours()];if(!bucket||bucket.n<5)return{available:false};const z=bucket.stdDev?(latest-bucket.mean)/bucket.stdDev:0;return{available:true,expectedMean:+bucket.mean.toFixed(2),zScore:+z.toFixed(2),unusualForHour:Math.abs(z)>2.5};}
-function f07_drift(records){const daily={};for(const r of records){if(r.tempValid===false||r.temperature==null)continue;const d=new Date(r.receivedAt).toISOString().slice(0,10);(daily[d]=daily[d]||[]).push(r.temperature);}const days=Object.keys(daily).sort();if(days.length<3)return{available:false};const{slope}=linreg(days.map(d=>runningStats(daily[d]).mean));return{available:true,driftPerDay:+slope.toFixed(3),driftSuspected:Math.abs(slope)>0.15};}
-function f08_vibTempCorrelation(records){let flagged=0;for(let i=1;i<records.length;i++){const p=records[i-1],c=records[i];if((c.vibrationCount||0)>=3&&p.tempValid!==false&&c.tempValid!==false&&c.temperature-p.temperature>0.5)flagged++;}return{likelyDoorOpenEvents:flagged};}
-function f09_reliability(records){if(records.length<2)return{score:100,missedIntervals:0};let missed=0;for(let i=1;i<records.length;i++)if(records[i].receivedAt-records[i-1].receivedAt>10000)missed++;return{score:Math.max(0,100-missed*2),missedIntervals:missed};}
-function f10_adaptiveThreshold(records,cfg){const stable=records.filter(r=>r.state==='SAFE'&&r.tempValid!==false).map(r=>r.temperature);if(stable.length<20)return{available:false};const{mean,stdDev}=runningStats(stable);return{available:true,suggestedLower:+(mean-2*stdDev).toFixed(1),suggestedUpper:+(mean+2*stdDev).toFixed(1),note:'Advisory only.'};}
-function f11_sensorHealth(records){const faults=records.filter(r=>r.state==='SENSOR_FAULT');const now=Date.now();const d30=faults.filter(f=>now-f.receivedAt<30*864e5).length;const d7=faults.filter(f=>now-f.receivedAt<7*864e5).length;const score=Math.max(0,Math.min(100,100-d30*3-d7*5));return{score,faultsLast7d:d7,faultsLast30d:d30,maintenanceRecommended:score<60};}
-function f12_tamperCheck(records){if(records.length<2)return{suspected:false};const last=records[records.length-1],prev=records[records.length-2];const gap=last.receivedAt-prev.receivedAt;const suspected=gap>20000&&(last.vibrationCount||0)>=3;return{suspected,gapMs:gap,note:suspected?'Long silent gap followed by vibration.':undefined};}
-function f13_coldChainQuality(records){const win=records.filter(r=>Date.now()-r.receivedAt<7*864e5);let wMin=0,rawMin=0;for(let i=1;i<win.length;i++){const p=win[i-1],c=win[i];const m=(c.receivedAt-p.receivedAt)/60000;if(m<=0||m>15)continue;if(p.state==='WARNING'){wMin+=m;rawMin+=m;}if(p.state==='CRITICAL'){wMin+=m*3;rawMin+=m;}}const score=Math.max(0,Math.round(100-wMin*0.5));const label=score>80?'GOOD':score>50?'REDUCED CONFIDENCE':'DO NOT USE — INSPECT / VVM / LAB CHECK';return{score,label,rawExcursionMinutes7d:Math.round(rawMin),disclaimer:'ESTIMATE ONLY — heuristic, not a certified vaccine potency test. Confirm with a physical VVM or lab test before use.'};}
-function f14_advice(state,ctx){const t=[];if(state==='CRITICAL')t.push('Move vaccines to backup fridge now; check door seal.');if(state==='WARNING')t.push('Check door is closed and thermostat hasn\'t shifted.');if(state==='SENSOR_FAULT')t.push('DHT11 may be loose — check wiring at GPIO4.');if(ctx.drift?.driftSuspected)t.push('Sensor drifting — consider recalibration.');if(ctx.vibrationCorrelation?.likelyDoorOpenEvents>3)t.push('Door opened often — minimize access.');if(ctx.tamperCheck?.suspected)t.push('Long silent gap + movement — physical check advised.');if(!t.length)t.push('Everything stable — no action needed.');return t;}
-function f15_weekOverWeek(records){const now=Date.now();const tw=records.filter(r=>now-r.receivedAt<7*864e5&&r.tempValid!==false).map(r=>r.temperature);const lw=records.filter(r=>now-r.receivedAt>=7*864e5&&now-r.receivedAt<14*864e5&&r.tempValid!==false).map(r=>r.temperature);if(tw.length<10||lw.length<10)return{available:false};const a=runningStats(tw).mean,b=runningStats(lw).mean;return{available:true,thisWeekMean:+a.toFixed(2),lastWeekMean:+b.toFixed(2),changePct:+(((a-b)/b)*100).toFixed(1)};}
-function f16_dataCompleteness(records){if(records.length<2)return{pct:100};const expected=Math.round((records[records.length-1].receivedAt-records[0].receivedAt)/2000);const pct=expected>0?Math.min(100,Math.round((records.length/expected)*100)):100;return{pct};}
-function f17_humidityStability(records){const h=records.filter(r=>r.humidity!=null&&r.humidity>=0).map(r=>r.humidity);if(h.length<5)return{available:false};const{mean,stdDev}=runningStats(h);return{available:true,meanHumidity:+mean.toFixed(1),stdDev:+stdDev.toFixed(1),stable:stdDev<8};}
-function f18_staleDevice(records){if(!records.length)return{stale:true};const ms=Date.now()-records[records.length-1].receivedAt;return{stale:ms>30000,lastSeenSecAgo:Math.round(ms/1000)};}
-function f19_learningMode(records){return{learningMode:records.length<30,samplesCollected:records.length,samplesNeeded:30};}
-function f20_summary({latest,trend,eta,anomaly,quality,advice}){const p=[];p.push(`Temperature ${latest.temperature?.toFixed?latest.temperature.toFixed(1):latest.temperature}°C, trending ${trend.toLowerCase()}.`);if(eta.willCross)p.push(eta.message);if(anomaly.isAnomaly)p.push('This reading is statistically unusual.');p.push(`Cold-chain quality estimate: ${quality.score}/100 (${quality.label}).`);p.push(advice[0]);return p.join(' ');}
-function f21_excursionCount(records){return records.filter(r=>['WARNING','CRITICAL'].includes(r.state)).length;}
-function f22_meanTimeBetweenFaults(records){const faults=records.filter(r=>r.state==='SENSOR_FAULT');if(faults.length<2)return{available:false};let total=0;for(let i=1;i<faults.length;i++)total+=faults[i].receivedAt-faults[i-1].receivedAt;return{available:true,avgHours:+((total/(faults.length-1))/3.6e6).toFixed(1)};}
-function f23_vibrationBurstDetector(records){const now=Date.now();const recent=records.filter(r=>now-r.receivedAt<600000);const totalVib=recent.reduce((s,r)=>s+(r.vibrationCount||0),0);return{burstActive:totalVib>=15,totalVibrationLast10Min:totalVib};}
-function f24_temperatureVolatility(temps){if(temps.length<3)return{available:false};let diffs=[];for(let i=1;i<temps.length;i++)diffs.push(Math.abs(temps[i]-temps[i-1]));return{available:true,avgSwing:+runningStats(diffs).mean.toFixed(3)};}
-function f25_forecastNext5Min(temps){const{slope}=linreg(temps);const latest=temps[temps.length-1];return{forecastTemp:+(latest+slope*150).toFixed(2),basis:'linear extrapolation, short-horizon estimate'};}
-function f26_deviceUptimeScore(records){const stale=f18_staleDevice(records);return{uptimePct:stale.stale?0:Math.min(100,f09_reliability(records).score)};}
-function f27_confidenceLevel(n){return n>=30?'HIGH':n>=10?'MEDIUM':'LOW';}
-function f28_seasonalDayComparison(records){const now=new Date();const today=now.getDay();const sameDay=records.filter(r=>new Date(r.receivedAt).getDay()===today&&r.tempValid!==false).map(r=>r.temperature);if(sameDay.length<10)return{available:false};return{available:true,meanForThisWeekday:+runningStats(sameDay).mean.toFixed(2)};}
-function f29_rapidConfigChangeFlag(timestamps){const now=Date.now();const recent=timestamps.filter(t=>now-t<600000);return{suspicious:recent.length>=3,changesLast10Min:recent.length};}
-function f30_batteryPlaceholder(){return{available:false,note:'Hardware telemetry unavailable — no battery sensor wired.'};}
-function f31_irPlaceholder(){return{available:false,note:'Hardware telemetry unavailable — IR sensor not wired to a GPIO.'};}
-function f32_deviceHealthComposite(sensorHealth,reliability,dataCompleteness){return{score:Math.round((sensorHealth.score+reliability.score+dataCompleteness.pct)/3)};}
-function f33_alertFatigueGuard(events){const now=Date.now();const last15m=events.filter(e=>now-e.timestamp<900000);return{highVolume:last15m.length>10,alertsLast15Min:last15m.length};}
-function f34_recoveryTimeTracker(records){let lastBad=null,recoveries=[];for(const r of records){if(['WARNING','CRITICAL'].includes(r.state))lastBad=r.receivedAt;if(r.state==='RECOVERY'&&lastBad)recoveries.push(r.receivedAt-lastBad);}if(!recoveries.length)return{available:false};return{available:true,avgRecoveryMinutes:+((runningStats(recoveries).mean)/60000).toFixed(1)};}
-function f35_falsePositiveRateEstimate(events){const total=events.length;if(total<5)return{available:false};const acknowledged=events.filter(e=>e.acknowledged).length;return{available:true,acknowledgedPct:+((acknowledged/total)*100).toFixed(0)};}
-function f36_energyEventCorrelation(records){return f08_vibTempCorrelation(records);} // door-open proxy reused
-function f37_deviceLocationConfidence(cfg){return{source:cfg.location.source||'NONE',accuracy:cfg.location.accuracy||'unknown',confidence:cfg.location.source==='MANUAL'?'HIGH':cfg.location.source==='AUTO_IP'?'LOW (city-level, not GPS)':'NONE'};}
-function f38_modeIntegrityCheck(records){const mixed=records.some((r,i)=>i>0&&r.simulated!==records[i-1].simulated&&(Date.now()-r.receivedAt<5000));return{modeConsistent:!mixed};}
-function f39_criticalStreakCounter(records){let streak=0,max=0;for(const r of records){if(r.state==='CRITICAL'){streak++;max=Math.max(max,streak);}else streak=0;}return{longestCriticalStreak:max};}
-function f40_overallSystemGrade(risk,quality,sensorHealth,reliability){const avg=(100-risk+quality.score+sensorHealth.score+reliability.score)/4;const grade=avg>85?'A':avg>70?'B':avg>50?'C':'D';return{score:Math.round(avg),grade};}
-function f41_naturalLanguageRootCause(latest,ctx){if(latest.state==='CRITICAL')return 'Temperature has been outside the safe band long enough to trigger CRITICAL — likely a door left open, power loss, or thermostat failure.';if(latest.state==='WARNING')return 'Temperature drifted outside the safe band and has stayed there past the warning threshold.';if(latest.state==='SENSOR_FAULT')return 'The DHT11 sensor stopped returning valid readings — check wiring or replace the sensor.';return 'No active issue — conditions are within the configured safe range.';}
-function f42_voiceAlertPriority(state){return state==='CRITICAL'?'urgent':state==='WARNING'||state==='SENSOR_FAULT'?'elevated':'normal';}
-
-let configChangeTimestamps = [];
-
-// ---------------- DEMO CONTROL (web-driven) ----------------
-app.post('/api/demo', (req, res) => {
-  const { level } = req.body || {};
-  const valid = ['NORMAL','WARN','HIGH','LOW','VIBRATION','FAULT','OFF'];
-  if (!valid.includes(level)) return res.status(400).json({ error: 'level must be one of ' + valid.join(', ') });
-  db.set('demo', level==='OFF' ? { active:false, level:'OFF' } : { active:true, level }).write();
-  pushAudit({ actor:'web', action:'DEMO_CHANGE', details:{ level } });
-  res.json({ ok:true, demo: db.get('demo').value() });
-});
-app.get('/api/demo', (req,res)=>res.json(db.get('demo').value()));
-
-// ---------------- SENSORS INGEST ----------------
-app.post('/api/sensors', (req, res) => {
-  const body = req.body;
-  if (!body || !body.deviceId || !body.state) return res.status(400).json({ error:'deviceId and state required' });
-  const risk = f01_riskScore(body.state, body.vibrationCount||0);
-  const record = { ...body, riskScore: risk.score, receivedAt: Date.now() };
-  db.get('telemetry').push(record).write();
-  if (db.get('telemetry').size().value() > 8000) db.get('telemetry').shift().write();
-
-  const recent = db.get('telemetry').filter({ deviceId: body.deviceId }).takeRight(2).value();
-  const prevState = recent.length>1 ? recent[0].state : null;
-  if (prevState && prevState !== body.state) {
-    db.get('events').push({ id: uuidv4(), timestamp: Date.now(), severity: body.state, previousState: prevState,
-      newState: body.state, simulated: !!body.simulated, deviceId: body.deviceId,
-      reason: `${body.simulated?'[DEMO] ':''}State changed from ${prevState} to ${body.state}` }).write();
-    if (body.state==='CRITICAL') sendTelegram('CRITICAL','CRITICAL',`${body.deviceId}: CRITICAL — ${body.temperature}°C.${body.simulated?' [DEMO]':''}`);
-    if (body.state==='WARNING') sendTelegram('WARNING','WARNING',`${body.deviceId}: drifting out of range (${body.temperature}°C).${body.simulated?' [DEMO]':''}`);
-    if (['SAFE','RECOVERY'].includes(body.state) && ['CRITICAL','WARNING'].includes(prevState))
-      sendTelegram('RECOVERY','INFO',`${body.deviceId}: back to normal.${body.simulated?' [DEMO]':''}`);
+ 
+  const incident = manageIncidentLifecycle(severity, reading);
+ 
+  // Multi-channel alerting for WARNING and above
+  if (severity.level >= 2) {
+    const voiceText = buildVoiceMessage(reading, severity);
+    reading.voiceMessage = voiceText;
+ 
+    if (severity.level >= 3) {
+      await sendTelegram(reading, severity, riskScore, conditionScore, ai.text);
+    }
+ 
+    if (severity.level === 4 && incident) {
+      incident.callStatus = state.callState.lastStatus;
+      const cs = state.callState;
+      if (cs.criticalSince === null) cs.criticalSince = Date.now();
+      const heldSeconds = (Date.now() - cs.criticalSince) / 1000;
+      if (heldSeconds >= ENV.CRITICAL_CONFIRMATION_SECONDS) {
+        await attemptCriticalCallEscalation(incident, reading, severity);
+      } else {
+        cs.lastStatus = 'CALL READY';
+      }
+    }
+  } else {
+    state.callState.criticalSince = null;
   }
-  res.json({ ok:true, riskScore: risk.score, riskReasons: risk.reasons });
+ 
+  persistAll();
+  broadcast();
+  return reading;
+}
+ 
+/* ---------------------------------------------------------------------- */
+/* DEMO EVENT GENERATION                                                  */
+/* ---------------------------------------------------------------------- */
+ 
+function currentDemoBase() {
+  return state.latest && state.mode === 'DEMO'
+    ? { temperature: state.latest.temperature, humidity: state.latest.humidity, vibration: state.latest.vibration, sensorFault: state.latest.sensorFault }
+    : Object.assign({}, state.demoBaseline);
+}
+ 
+function demoEventFromCommand(command) {
+  const base = currentDemoBase();
+  const ev = { mode: 'DEMO', temperature: base.temperature, humidity: base.humidity, vibration: base.vibration, sensorFault: false, wifiOk: true, source: 'DEMO-CMD:' + command };
+ 
+  switch (command) {
+    case 'normal': ev.temperature = 5.0; ev.vibration = false; ev.sensorFault = false; break;
+    case 'low': ev.temperature = 1.0; break;
+    case 'high': ev.temperature = 8.6; break;
+    case 'warning': ev.temperature = 9.4; break;
+    case 'danger': case 'critical': ev.temperature = 11.5; ev.vibration = true; break;
+    case 'vibration': ev.vibration = true; break;
+    case 'novibration': ev.vibration = false; break;
+    case 'tempnormal': ev.temperature = 5.0; break;
+    case 'templow': ev.temperature = 0.5; break;
+    case 'temphigh': ev.temperature = 10.0; break;
+    case 'sensorfault': ev.sensorFault = true; break;
+    case 'wifi': ev.wifiOk = true; break;
+    case 'offline': ev.wifiOk = false; break;
+    case 'recovery': ev.temperature = 5.0; ev.vibration = false; ev.sensorFault = false; break;
+    case 'reset': ev.temperature = 5.0; ev.vibration = false; ev.sensorFault = false; ev.wifiOk = true; break;
+    default: break;
+  }
+  state.demoBaseline = { temperature: ev.temperature, humidity: ev.humidity, vibration: ev.vibration, sensorFault: ev.sensorFault };
+  return ev;
+}
+ 
+const HELP_TEXT = [
+  'normal', 'low', 'high', 'warning', 'danger', 'vibration', 'novibration', 'tempnormal', 'templow',
+  'temphigh', 'sensorfault', 'wifi', 'offline', 'recovery', 'critical', 'reset', 'real', 'demo', 'status',
+  'scenario1..scenario8', 'calltest', 'help'
+];
+ 
+/* Scenario runner: schedules a short timed sequence of demo events through
+   the SAME processEvent() pipeline so graphs/incidents/alerts build naturally. */
+function runScenario(name) {
+  const sequences = {
+    scenario1: [{ c: 'normal', d: 0 }],
+    scenario2: [{ c: 'tempnormal', d: 0 }, { c: 'high', d: 4000 }, { c: 'warning', d: 8000 }, { c: 'danger', d: 12000 }],
+    scenario3: [{ c: 'normal', d: 0 }, { c: 'danger', d: 2000 }],
+    scenario4: [{ c: 'vibration', d: 0 }, { c: 'novibration', d: 3000 }, { c: 'vibration', d: 6000 }, { c: 'vibration', d: 9000 }, { c: 'vibration', d: 12000 }],
+    scenario5: [{ c: 'vibration', d: 0 }, { c: 'high', d: 3000 }, { c: 'danger', d: 6000 }],
+    scenario6: [{ c: 'sensorfault', d: 0 }],
+    scenario7: [{ c: 'danger', d: 0 }, { c: 'warning', d: 6000 }, { c: 'recovery', d: 12000 }, { c: 'normal', d: 16000 }],
+    scenario8: [{ c: 'offline', d: 0 }, { c: 'wifi', d: 6000 }, { c: 'normal', d: 7000 }]
+  };
+  const seq = sequences[name];
+  if (!seq) return false;
+  seq.forEach((step) => {
+    setTimeout(() => { processEvent(demoEventFromCommand(step.c)).catch((e) => console.error(e)); }, step.d);
+  });
+  return true;
+}
+ 
+/* ---------------------------------------------------------------------- */
+/* AI INCIDENT SUMMARY + REPLAY                                          */
+/* ---------------------------------------------------------------------- */
+ 
+function ruleBasedIncidentSummary(incident) {
+  const events = incident.events || [];
+  const risks = events.map((e) => e.riskScore);
+  const maxRisk = risks.length ? Math.max(...risks) : 0;
+  const minRisk = risks.length ? Math.min(...risks) : 0;
+  const recovered = incident.stage === 'RESOLVED';
+  return {
+    aiGenerated: false,
+    whatHappened: `Incident ${incident.id} opened in ${incident.mode} mode and reached peak severity ${SEVERITY[incident.severityPeak].label}.`,
+    whenItHappened: incident.openedAt,
+    howSevere: `Peak risk score observed: ${maxRisk}/100 (minimum during incident: ${minRisk}/100).`,
+    whatChanged: `Severity progressed through stages: ${incident.stageHistory.map((s) => s.stage).join(' -> ')}.`,
+    riskProgression: risks,
+    recoveryOccurred: recovered,
+    recoveryDurationSec: incident.recoveryDurationSec,
+    recommendedFollowUp: recovered
+      ? 'Review the incident timeline and confirm no product quality concerns per your organization\'s validated procedure.'
+      : 'Incident is still open or unresolved; continue monitoring and follow your escalation procedure.'
+  };
+}
+ 
+async function buildAIIncidentSummary(incident) {
+  const base = ruleBasedIncidentSummary(incident);
+  if (!ENV.AI_API_KEY) return base;
+  const prompt = `Summarize this VaxGuard cold-chain monitoring incident for an operator in 4-5 short sentences. ` +
+    `Incident data: ${JSON.stringify(base)}. Do not claim medical or pharmaceutical validation. Clearly this is AI-generated.`;
+  const enhanced = await callAnthropicEnhance(prompt);
+  if (enhanced) return Object.assign({}, base, { aiGenerated: true, narrative: enhanced });
+  return base;
+}
+ 
+/* ---------------------------------------------------------------------- */
+/* EXPRESS APP + SOCKET.IO                                               */
+/* ---------------------------------------------------------------------- */
+ 
+const app = express();
+app.use(cors());
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
+ 
+const server = http.createServer(app);
+const io = new SocketIOServer(server, { cors: { origin: '*' } });
+ 
+function publicState() {
+  return {
+    mode: state.mode,
+    wifiOk: state.wifiOk,
+    latest: state.latest,
+    history: state.history.slice(-CFG.server.maxHistoryPoints),
+    incidents: state.incidents.slice(-30),
+    currentIncidentId: state.currentIncidentId,
+    callState: state.callState,
+    callConfig: {
+      realCallEnabled: ENV.ALERT_CALL_ENABLED,
+      demoCallEnabled: ENV.DEMO_CALL_ENABLED,
+      confirmationSeconds: ENV.CRITICAL_CONFIRMATION_SECONDS,
+      cooldownMinutes: ENV.CALL_COOLDOWN_MINUTES,
+      maxAttempts: ENV.MAX_CALL_ATTEMPTS
+    },
+    telegramConfigured: !!(ENV.TELEGRAM_BOT_TOKEN && ENV.TELEGRAM_CHAT_ID),
+    aiConfigured: !!ENV.AI_API_KEY,
+    explanationHistory: state.explanationHistory.slice(-30)
+  };
+}
+ 
+function broadcast() { io.emit('state', publicState()); }
+ 
+io.on('connection', (socket) => {
+  socket.emit('state', publicState());
+  socket.emit('help', HELP_TEXT);
 });
-
-app.get('/api/sensors/latest', (req,res)=>{
-  const { deviceId } = req.query;
-  let q = db.get('telemetry'); if (deviceId) q = q.filter({ deviceId });
-  const latest = q.takeRight(1).value()[0] || null;
-  if (latest) { const r = f01_riskScore(latest.state, latest.vibrationCount||0); latest.riskScore=r.score; latest.riskReasons=r.reasons; }
-  res.json(latest);
+ 
+/* ---- device auth middleware for ESP32 posts ---- */
+function requireDeviceKey(req, res, next) {
+  if (!ENV.DEVICE_KEY) return next(); // not configured -> allow (prototype convenience)
+  if (req.headers['x-device-key'] === ENV.DEVICE_KEY) return next();
+  return res.status(401).json({ ok: false, error: 'invalid device key' });
+}
+ 
+/* ---------------------------------------------------------------------- */
+/* ROUTES                                                                  */
+/* ---------------------------------------------------------------------- */
+ 
+app.get('/api/state', (req, res) => res.json(publicState()));
+ 
+app.get('/api/history', (req, res) => {
+  const limit = parseInt(req.query.limit || '200', 10);
+  res.json(state.history.slice(-limit));
 });
-
-const RANGE_MS = { '1h':3600e3,'6h':6*3600e3,'24h':24*3600e3,'7d':7*24*3600e3 };
-app.get('/api/history', (req,res)=>{
-  const { range='1h', deviceId } = req.query;
-  const start = Date.now() - (RANGE_MS[range]||RANGE_MS['1h']);
-  let results = db.get('telemetry').value().filter(r=>r.receivedAt>=start);
-  if (deviceId) results = results.filter(r=>r.deviceId===deviceId);
-  res.json({ series: results.map(r=>({ t:r.receivedAt, temperature:r.temperature, humidity:r.humidity, vibrationCount:r.vibrationCount, state:r.state, simulated:!!r.simulated })) });
+ 
+app.get('/api/audit', (req, res) => {
+  const limit = parseInt(req.query.limit || '100', 10);
+  res.json(state.audit.slice(-limit));
 });
-
-app.get('/api/events', (req,res)=>res.json(db.get('events').value().slice(-300).reverse()));
-app.get('/api/alerts', (req,res)=>res.json(db.get('events').value().filter(e=>['WARNING','CRITICAL','SENSOR_FAULT'].includes(e.severity)).slice(-50).reverse()));
-app.post('/api/events/:id/acknowledge', requirePin, (req,res)=>{
-  const e = db.get('events').find({ id:req.params.id }).value();
-  if (!e) return res.status(404).json({ error:'not found' });
-  db.get('events').find({ id:req.params.id }).assign({ acknowledged:true }).write();
-  pushAudit({ actor:'admin', action:'ACK_EVENT', details:{ id:req.params.id } });
-  res.json({ ok:true });
+ 
+app.get('/api/incidents', (req, res) => res.json(state.incidents.slice(-100)));
+ 
+app.get('/api/incidents/:id', (req, res) => {
+  const inc = state.incidents.find((i) => i.id === req.params.id);
+  if (!inc) return res.status(404).json({ ok: false, error: 'not found' });
+  res.json(inc);
 });
-
-// ---------------- AI INSIGHTS: bundles all 40+ features ----------------
-app.get('/api/ai/insights', (req,res)=>{
-  const { deviceId } = req.query;
-  let recent = db.get('telemetry').value(); if (deviceId) recent = recent.filter(r=>r.deviceId===deviceId);
-  const windowed = recent.slice(-300);
-  const temps = windowed.filter(r=>r.tempValid!==false).map(r=>r.temperature);
-  if (temps.length < 3) return res.json({ message:'Not enough data yet — collecting readings.' });
-
-  const cfg = db.get('config').value();
-  const latest = windowed[windowed.length-1];
-  const anomaly = f03_anomaly(temps);
-  const trend = f02_trend(temps);
-  const eta = f04_eta(temps, cfg);
-  const drift = f07_drift(recent);
-  const vibCorr = f08_vibTempCorrelation(windowed);
-  const tamper = f12_tamperCheck(windowed);
-  const quality = f13_coldChainQuality(recent);
-  const advice = f14_advice(latest.state, { drift, vibrationCorrelation:vibCorr, tamperCheck:tamper });
-  const risk = f01_riskScore(latest.state, latest.vibrationCount||0);
-  const sensorHealth = f11_sensorHealth(recent);
-  const reliability = f09_reliability(windowed);
-  const completeness = f16_dataCompleteness(windowed);
-  const events = db.get('events').value();
-
+ 
+app.get('/api/incidents/:id/replay', (req, res) => {
+  const inc = state.incidents.find((i) => i.id === req.params.id);
+  if (!inc) return res.status(404).json({ ok: false, error: 'not found' });
+  const events = inc.events || [];
+  const peakIdx = events.reduce((bi, e, i, arr) => (e.riskScore > (arr[bi] ? arr[bi].riskScore : -1) ? i : bi), 0);
   res.json({
-    disclaimer: 'Rule-based statistical analysis — every number is explainable, not a trained black-box model.',
-    mode: latest.simulated ? 'DEMO' : 'REAL',
-    summary: f20_summary({ latest, trend, eta, anomaly, quality, advice }),
-    rootCause: f41_naturalLanguageRootCause(latest, {}),
-    voicePriority: f42_voiceAlertPriority(latest.state),
-    riskScore: risk.score, riskReasons: risk.reasons,
-    trend: { direction: trend },
-    anomaly, eta, drift, vibrationCorrelation: vibCorr, tamperCheck: tamper,
-    hourlyPattern: f06_patternAnomaly(recent, temps[temps.length-1]),
-    reliability, adaptiveThreshold: f10_adaptiveThreshold(recent, cfg),
-    sensorHealth, coldChainQuality: quality, advice,
-    weekOverWeek: f15_weekOverWeek(recent), dataCompleteness: completeness,
-    humidityStability: f17_humidityStability(windowed), staleDevice: f18_staleDevice(windowed),
-    learningMode: f19_learningMode(recent), excursionCount: f21_excursionCount(windowed),
-    meanTimeBetweenFaults: f22_meanTimeBetweenFaults(recent), vibrationBurst: f23_vibrationBurstDetector(recent),
-    volatility: f24_temperatureVolatility(temps), forecast5Min: f25_forecastNext5Min(temps),
-    uptime: f26_deviceUptimeScore(windowed), confidence: f27_confidenceLevel(temps.length),
-    seasonalComparison: f28_seasonalDayComparison(recent), rapidConfigChange: f29_rapidConfigChangeFlag(configChangeTimestamps),
-    battery: f30_batteryPlaceholder(), irSensor: f31_irPlaceholder(),
-    deviceHealth: f32_deviceHealthComposite(sensorHealth, reliability, completeness),
-    alertFatigue: f33_alertFatigueGuard(events), recoveryTime: f34_recoveryTimeTracker(windowed),
-    falsePositiveRate: f35_falsePositiveRateEstimate(events), location: f37_deviceLocationConfidence(cfg),
-    modeIntegrity: f38_modeIntegrityCheck(windowed), criticalStreak: f39_criticalStreakCounter(windowed),
-    systemGrade: f40_overallSystemGrade(risk.score, quality, sensorHealth, reliability)
+    incidentId: inc.id,
+    before: events.slice(0, Math.max(1, Math.floor(events.length * 0.25))),
+    during: events.slice(Math.floor(events.length * 0.25), peakIdx + 1),
+    peak: events[peakIdx] || null,
+    recovery: events.slice(peakIdx + 1)
   });
 });
-
-// ---------------- LOCATION ----------------
-let lastGeoLookupMs = 0;
-async function maybeAutoLocate(ip) {
-  const cfg = db.get('config').value();
-  if (cfg.location?.source === 'MANUAL') return;
-  if (Date.now() - lastGeoLookupMs < 3600000) return;
-  lastGeoLookupMs = Date.now();
+ 
+app.post('/api/incidents/:id/acknowledge', (req, res) => {
+  const inc = state.incidents.find((i) => i.id === req.params.id);
+  if (!inc) return res.status(404).json({ ok: false, error: 'not found' });
+  inc.acknowledgedBy = req.body.by || 'operator';
+  inc.acknowledgedAt = nowIso();
+  audit('INCIDENT_ACKNOWLEDGED', { incidentId: inc.id, by: inc.acknowledgedBy });
+  broadcast();
+  res.json({ ok: true, incident: inc });
+});
+ 
+app.get('/api/summary/:id', async (req, res) => {
+  const inc = state.incidents.find((i) => i.id === req.params.id);
+  if (!inc) return res.status(404).json({ ok: false, error: 'not found' });
+  const summary = await buildAIIncidentSummary(inc);
+  res.json(summary);
+});
+ 
+app.post('/api/mode', (req, res) => {
+  const m = (req.body.mode || '').toUpperCase();
+  if (m !== 'REAL' && m !== 'DEMO') return res.status(400).json({ ok: false, error: 'mode must be REAL or DEMO' });
+  state.mode = m;
+  audit('MODE_CHANGED', { mode: m });
+  broadcast();
+  res.json({ ok: true, mode: state.mode });
+});
+ 
+// Web demo control panel + serial-forwarded demo commands land here too
+app.post('/api/demo/:command', async (req, res) => {
+  const command = req.params.command.toLowerCase();
+ 
+  if (command === 'help') return res.json({ ok: true, commands: HELP_TEXT });
+  if (command === 'status') return res.json({ ok: true, state: publicState() });
+  if (command === 'real') { state.mode = 'REAL'; audit('MODE_CHANGED', { mode: 'REAL' }); broadcast(); return res.json({ ok: true, mode: 'REAL' }); }
+  if (command === 'demo') { state.mode = 'DEMO'; audit('MODE_CHANGED', { mode: 'DEMO' }); broadcast(); return res.json({ ok: true, mode: 'DEMO' }); }
+  if (command.startsWith('scenario')) {
+    const started = runScenario(command);
+    return res.json({ ok: started });
+  }
+  if (command === 'calltest' || command === 'test_call' || command === 'testcall') {
+    const enabled = state.mode === 'DEMO' ? ENV.DEMO_CALL_ENABLED : true;
+    if (!enabled) return res.json({ ok: false, status: 'CALLING DISABLED' });
+    const message = 'VaxGuard demonstration test alert. This is a test of the automatic operator call system. No action is required.';
+    const result = await placeCall(ENV.ALERT_CALL_NUMBER, 'TEST-' + Date.now(), message, true);
+    audit('TEST_CALL', { result: result.ok ? 'CALL COMPLETED' : 'CALL FAILED' });
+    return res.json({ ok: result.ok, status: result.ok ? 'CALL COMPLETED' : 'CALL FAILED' });
+  }
+ 
+  // Normal simulated sensor/state commands -> unified pipeline
+  const ev = demoEventFromCommand(command);
+  const reading = await processEvent(ev);
+  res.json({ ok: true, reading });
+});
+ 
+// ESP32 posts here for BOTH real sensor readings and serial-triggered demo
+// events it forwards over WiFi. mode field in body decides the pipeline path
+// (both paths are identical - only the data source differs).
+app.post('/api/event', requireDeviceKey, async (req, res) => {
   try {
-    const clean = (ip||'').replace('::ffff:','');
-    const r = await fetch(`http://ip-api.com/json/${clean}?fields=status,city,regionName,country,lat,lon`);
-    const d = await r.json();
-    if (d.status === 'success') db.get('config').assign({ location:{ lat:d.lat, lng:d.lon, label:`${d.city}, ${d.regionName}, ${d.country}`, source:'AUTO_IP', accuracy:'city-level (approximate)' } }).write();
-  } catch(e) {}
+    const body = req.body || {};
+    const raw = {
+      mode: (body.mode || state.mode || 'REAL').toUpperCase(),
+      temperature: typeof body.temperature === 'number' ? body.temperature : parseFloat(body.temperature),
+      humidity: typeof body.humidity === 'number' ? body.humidity : parseFloat(body.humidity),
+      vibration: !!body.vibration,
+      sensorFault: !!body.sensorFault,
+      wifiOk: body.wifiOk !== undefined ? !!body.wifiOk : true,
+      source: body.source || 'ESP32'
+    };
+    const reading = await processEvent(raw);
+    res.json({ ok: true, reading });
+  } catch (e) {
+    console.error('[VaxGuard] /api/event error:', e.message);
+    res.status(500).json({ ok: false, error: 'internal error' });
+  }
+});
+ 
+app.post('/api/test/telegram', async (req, res) => {
+  const reading = state.latest || { temperature: 5, vibration: false, riskScore: 0, conditionScore: 100 };
+  const result = await sendTelegram(reading, SEVERITY[1], reading.riskScore || 0, reading.conditionScore || 100, 'This is a VaxGuard system test message.');
+  res.json(result);
+});
+ 
+app.post('/api/test/call', async (req, res) => {
+  const message = 'VaxGuard test call. This is a system test of the automated calling feature. No action is required.';
+  const result = await placeCall(ENV.ALERT_CALL_NUMBER, 'TEST-' + Date.now(), message, true);
+  audit('TEST_CALL', { result: result.ok ? 'CALL COMPLETED' : 'CALL FAILED' });
+  res.json(result);
+});
+ 
+// Twilio fetches this URL when the call connects, to know what to say
+app.get('/voice/twiml/:key', (req, res) => {
+  const entry = callMessages.get(req.params.key);
+  const text = entry ? entry.message : 'VaxGuard automated alert. Please check the VaxGuard dashboard for details.';
+  res.type('text/xml');
+  res.send(`<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Joanna">${escapeXml(text)}</Say></Response>`);
+});
+ 
+function escapeXml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
-app.get('/api/location', async (req,res)=>{ await maybeAutoLocate(req.ip); res.json(db.get('config.location').value()); });
-app.put('/api/config/location', requirePin, (req,res)=>{
-  const { lat, lng, label } = req.body || {};
-  db.get('config').assign({ location:{ lat:lat??null, lng:lng??null, label:label||'', source:'MANUAL', accuracy:'exact (manual)' } }).write();
-  pushAudit({ actor:'admin', action:'LOCATION_UPDATE', details:{ lat, lng, label } });
-  res.json({ ok:true, location: db.get('config.location').value() });
+ 
+app.get('/api/health', (req, res) => res.json({ ok: true, uptime: process.uptime(), mode: state.mode }));
+ 
+/* ---------------------------------------------------------------------- */
+/* GLOBAL SAFETY NET - external service failures must never crash core    */
+/* monitoring. The sensor/demo pipeline (processEvent) is always wrapped  */
+/* in try/catch at each external-call boundary above.                    */
+/* ---------------------------------------------------------------------- */
+ 
+process.on('unhandledRejection', (reason) => {
+  console.error('[VaxGuard] Unhandled rejection (ignored, monitoring continues):', reason);
 });
-
-// ---------------- CONFIG ----------------
-app.get('/api/config', (req,res)=>res.json(db.get('config').value()));
-app.put('/api/config', requirePin, (req,res)=>{
-  const allowed = ['tempLower','tempUpper','tempWarningBand','warningDurationMs','criticalDurationMs','deviceName'];
-  const updates = {}; for (const k of allowed) if (req.body[k]!==undefined) updates[k]=req.body[k];
-  const v = (db.get('config.configVersion').value()||1)+1;
-  db.get('config').assign({ ...updates, configVersion:v }).write();
-  pushAudit({ actor:'admin', action:'CONFIG_CHANGE', details: updates });
-  configChangeTimestamps.push(Date.now());
-  res.json({ ok:true, config: db.get('config').value() });
+process.on('uncaughtException', (err) => {
+  console.error('[VaxGuard] Uncaught exception (ignored, monitoring continues):', err.message);
 });
-
-// ---------------- AUDIT ----------------
-app.get('/api/audit', requirePin, (req,res)=>res.json(db.get('audit').value().slice(-300).reverse()));
-app.get('/api/audit/verify', requirePin, (req,res)=>res.json(verifyAuditChain()));
-
-// ---------------- VOICE ASSISTANT (text Q&A backend, speech handled client-side) ----------------
-app.post('/api/voice/query', (req,res)=>{
-  const q = (req.body?.question||'').toLowerCase();
-  const deviceId = req.body?.deviceId || 'VAX-001';
-  const latest = db.get('telemetry').filter({ deviceId }).takeRight(1).value()[0];
-  if (!latest) return res.json({ answer: "I don't have any data yet." });
-  const risk = f01_riskScore(latest.state, latest.vibrationCount||0);
-  let answer;
-  if (q.includes('temperature')) answer = `Temperature is ${latest.temperature?.toFixed(1)} degrees.`;
-  else if (q.includes('humidity')) answer = `Humidity is ${latest.humidity>=0?latest.humidity.toFixed(0):'unknown'} percent.`;
-  else if (q.includes('vibration')) answer = `${latest.vibrationCount||0} vibration events in the current window.`;
-  else if (q.includes('safe') || q.includes('okay')) answer = latest.state==='SAFE' ? 'Yes, everything is safe.' : `Currently in ${latest.state} state.`;
-  else if (q.includes('risk')) answer = `Risk score is ${risk.score} out of 100. ${risk.reasons.join('. ')}`;
-  else if (q.includes('why')) answer = f41_naturalLanguageRootCause(latest, {});
-  else answer = `Current state is ${latest.state}.`;
-  res.json({ answer, priority: f42_voiceAlertPriority(latest.state) });
+ 
+server.listen(ENV.PORT, () => {
+  console.log(`[VaxGuard] server listening on port ${ENV.PORT} | mode=${state.mode} | env=${ENV.NODE_ENV}`);
+  console.log('[VaxGuard] Automated calls are intended for a configured responsible operator.');
+  console.log('[VaxGuard] This prototype must not be treated as a substitute for validated emergency, pharmaceutical, or medical procedures.');
 });
-
-app.use('/', express.static(path.join(__dirname, 'public')));
-app.use((err,req,res,next)=>{ console.error(err); res.status(500).json({ error:'Internal error' }); });
-
-const PORT = process.env.PORT || 4000;
-app.listen(PORT, ()=>console.log(`VAXGUARD server running on port ${PORT}`));
+ 
