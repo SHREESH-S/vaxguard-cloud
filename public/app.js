@@ -1,441 +1,797 @@
-// ============================================================
-// VaxGuard dashboard client
-// All numbers shown here come from the server's dashboard:update
-// payload (see server.js). Nothing is invented client-side.
-// ============================================================
+/**
+ * VaxGuard X — Frontend Application
+ * Real-time dashboard, dual voice systems, risk intelligence
+ */
 
-const socket = io();
-let latest = null;
-let charts = {};
+(() => {
+  'use strict';
 
-// ---------------- Navigation ----------------
-const navList = document.getElementById('navList');
-const screens = document.querySelectorAll('.screen');
-navList.addEventListener('click', (e) => {
-  const li = e.target.closest('li[data-screen]');
-  if (!li) return;
-  document.querySelectorAll('#navList li').forEach(x => x.classList.remove('active'));
-  li.classList.add('active');
-  const target = li.dataset.screen;
-  screens.forEach(s => s.classList.toggle('active', s.id === 'screen-' + target));
-  document.getElementById('sidebar').classList.remove('open');
-  if (target === 'analytics') loadHistoryCharts();
-  if (target === 'audit') loadAudit();
-  if (target === 'alerts') loadAlertsTable();
-});
-
-document.getElementById('hamburger').addEventListener('click', () => {
-  document.getElementById('sidebar').classList.toggle('open');
-});
-
-// ---------------- Theme ----------------
-const html = document.documentElement;
-html.setAttribute('data-theme', localStorage.getItem('vg_theme') || 'dark');
-document.getElementById('themeToggle').addEventListener('click', () => {
-  const next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
-  html.setAttribute('data-theme', next);
-  localStorage.setItem('vg_theme', next);
-});
-
-// ---------------- Alert drawer ----------------
-const drawer = document.getElementById('alertDrawer');
-document.getElementById('alertDrawerBtn').addEventListener('click', () => drawer.classList.add('open'));
-document.getElementById('closeDrawer').addEventListener('click', () => drawer.classList.remove('open'));
-let drawerAlerts = [];
-function renderDrawer() {
-  const list = document.getElementById('drawerList');
-  list.innerHTML = drawerAlerts.slice().reverse().map(a => `
-    <div class="drawer-item">
-      <strong>${a.severity}</strong> — ${a.message}<br/>
-      <span class="small-note">${new Date(a.timestamp).toLocaleString()}</span>
-    </div>`).join('') || '<p class="small-note">No alerts yet.</p>';
-  document.getElementById('alertCount').textContent = drawerAlerts.filter(a => !a.acknowledged).length;
-}
-
-// ---------------- Socket events ----------------
-socket.on('connect', () => document.getElementById('connIndicator').textContent = '● connected');
-socket.on('disconnect', () => document.getElementById('connIndicator').textContent = '● disconnected');
-
-socket.on('dashboard:update', (payload) => {
-  latest = payload;
-  render(payload);
-});
-
-socket.on('alert:new', (alert) => {
-  drawerAlerts.push(alert);
-  renderDrawer();
-  maybeSpeakAlert(alert);
-});
-socket.on('alert:updated', (alert) => {
-  const i = drawerAlerts.findIndex(a => a.id === alert.id);
-  if (i >= 0) drawerAlerts[i] = alert;
-  renderDrawer();
-});
-socket.on('event:new', () => { /* audit list refreshes on demand */ });
-
-fetch('/api/alerts').then(r => r.json()).then(a => { drawerAlerts = a; renderDrawer(); });
-
-// ---------------- Render dashboard ----------------
-function render(p) {
-  const stateLabel = p.currentState || 'OFFLINE';
-  const modePill = document.getElementById('modePill');
-  const statePill = document.getElementById('statePill');
-  modePill.textContent = 'MODE: ' + p.mode;
-  statePill.textContent = 'STATE: ' + stateLabel;
-  statePill.className = 'state-pill state-' + stateLabel;
-
-  const dataLabel = p.mode === 'DEMO' ? 'DEMO DATA' : 'REAL SENSOR DATA';
-
-  const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
-
-  // Overview
-  set('ov-temp', fmtTemp(p.temperature));
-  set('ov-hum', fmtPct(p.humidity));
-  set('ov-vib', p.vibration ? 'DETECTED' : 'NONE');
-  set('ov-risk', `${p.risk.score}/100 (${p.risk.category})`);
-  set('ov-cond', p.advisory.result.replace('_', ' '));
-  set('ov-device', p.deviceOnline ? 'ONLINE' : 'OFFLINE');
-  set('ov-datalabel', dataLabel);
-
-  // Live monitor
-  set('lv-temp', fmtTemp(p.temperature));
-  set('lv-hum', fmtPct(p.humidity));
-  set('lv-vib', p.vibration ? 'VIBRATION DETECTED' : 'STABLE');
-  set('lv-risk', `${p.risk.score}/100`);
-  set('lv-health', `${p.sensorHealth.score}%`);
-  set('lv-mode', p.mode + ' (' + dataLabel + ')');
-  set('lv-updated', new Date(p.serverTime).toLocaleTimeString());
-  set('lv-quality', p.sensorHealth.freshness);
-
-  // Risk
-  const scoreEl = document.getElementById('risk-score-big');
-  if (scoreEl) { scoreEl.textContent = p.risk.score; scoreEl.style.color = riskColor(p.risk.score); }
-  set('risk-category', p.risk.category.replace('_', ' '));
-  const reasonsEl = document.getElementById('risk-reasons');
-  if (reasonsEl) reasonsEl.innerHTML = p.risk.reasons.map(r => `<li>+${r.points} — ${r.reason}</li>`).join('') || '<li>No contributing risk factors currently.</li>';
-
-  // Vibration
-  set('vib-1m', p.risk.vibration.countLast1Min);
-  set('vib-10m', p.risk.vibration.countLast10Min);
-  set('vib-class', p.risk.vibration.classification.replace(/_/g, ' '));
-  set('vib-total', p.risk.vibration.totalRecorded);
-
-  // Prediction / early warning
-  set('ew-level', p.earlyWarning.level.replace('_', ' '));
-  set('ew-message', p.earlyWarning.message);
-  set('ew-action', p.earlyWarning.recommendedAction);
-  set('ew-label', p.earlyWarning.label);
-  set('ew-direction', p.risk.trend.direction);
-  set('ew-slope', p.risk.trend.slope);
-  set('ew-confidence', p.risk.trend.confidence);
-
-  // Condition advisory
-  set('cond-result', p.advisory.result.replace('_', ' '));
-  set('cond-reason', p.advisory.reason);
-  set('cause-most', p.rootCause.mostLikely);
-  set('cause-inspection', p.rootCause.recommendedInspection);
-  const causeList = document.getElementById('cause-list');
-  if (causeList) causeList.innerHTML = p.rootCause.causes.map(c => `<li>${c}</li>`).join('');
-  set('cause-combined', p.rootCause.combinedEvent || '');
-
-  // Sensor health
-  const sh = p.sensorHealth;
-  const grid = document.getElementById('sensorHealthGrid');
-  if (grid) grid.innerHTML = `
-    <div class="card"><div class="card-label">DHT11</div><div class="card-value">${sh.dht11}</div></div>
-    <div class="card"><div class="card-label">Temperature</div><div class="card-value">${sh.temperatureValid ? 'VALID' : 'INVALID'}</div></div>
-    <div class="card"><div class="card-label">Humidity</div><div class="card-value">${sh.humidityValid ? 'VALID' : 'INVALID'}</div></div>
-    <div class="card"><div class="card-label">SW-420</div><div class="card-value">${sh.sw420}</div></div>
-    <div class="card"><div class="card-label">ESP32</div><div class="card-value">${sh.esp32}</div></div>
-    <div class="card"><div class="card-label">Wi-Fi</div><div class="card-value">${sh.wifi}</div></div>
-    <div class="card"><div class="card-label">Data freshness</div><div class="card-value">${sh.freshness}</div></div>
-    <div class="card"><div class="card-label">Sensor Health Score</div><div class="card-value">${sh.score}%</div></div>
-  `;
-
-  // Digital twin / device health
-  set('dt-id', p.settings.deviceId);
-  set('dt-mode', p.mode);
-  set('dt-temp', fmtTemp(p.temperature));
-  set('dt-hum', fmtPct(p.humidity));
-  set('dt-vib', p.vibration ? 'YES' : 'NO');
-  set('dt-risk', `${p.risk.score}/100`);
-  set('dt-conn', p.deviceOnline ? 'ONLINE' : 'OFFLINE');
-  set('dt-health', `${p.sensorHealth.score}%`);
-  set('dt-lastseen', p.lastEsp32Update ? new Date(p.lastEsp32Update).toLocaleString() : 'Never');
-
-  // Network
-  set('net-wifi', p.wifi ? 'CONNECTED' : 'DISCONNECTED');
-  set('net-server', p.deviceOnline ? 'CONNECTED' : 'DISCONNECTED');
-  set('net-heartbeat', p.lastHeartbeat ? new Date(p.lastHeartbeat).toLocaleTimeString() : 'None yet');
-
-  // Emergency panel
-  set('em-severity', p.currentState);
-  set('em-risk', `${p.risk.score}/100`);
-  set('em-temp', fmtTemp(p.temperature));
-  set('em-vib', p.vibration ? 'DETECTED' : 'NONE');
-  set('em-health', `${p.sensorHealth.score}%`);
-  set('em-device', p.deviceOnline ? 'ONLINE' : 'OFFLINE');
-  set('em-action', p.earlyWarning.recommendedAction);
-  const lastAlert = drawerAlerts[drawerAlerts.length - 1];
-  set('em-lastevent', lastAlert ? `${lastAlert.severity}: ${lastAlert.message}` : 'None');
-}
-
-function fmtTemp(t) { return (typeof t === 'number' && !Number.isNaN(t)) ? t.toFixed(1) + ' °C' : 'SENSOR FAULT'; }
-function fmtPct(h) { return (typeof h === 'number' && !Number.isNaN(h)) ? h.toFixed(0) + ' %' : '--'; }
-function riskColor(score) {
-  if (score > 80) return 'var(--red)';
-  if (score > 40) return 'var(--amber)';
-  return 'var(--green)';
-}
-
-// ---------------- Charts ----------------
-async function loadHistoryCharts() {
-  const range = document.getElementById('rangeSelect').value;
-  const history = await fetch('/api/history?range=' + range).then(r => r.json());
-  const labels = history.map(h => new Date(h.timestamp).toLocaleTimeString());
-
-  buildChart('tempChart', 'Temperature (°C)', labels, history.map(h => h.temperature), '#3aa0ff');
-  buildChart('humChart', 'Humidity (%)', labels, history.map(h => h.humidity), '#2ecc71');
-  // risk isn't stored per-history-sample; approximate via a rolling call not needed - show flat placeholder note
-  buildChart('riskChart', 'Vibration (1 = event)', labels, history.map(h => h.vibration ? 1 : 0), '#f5a623');
-}
-document.getElementById('rangeSelect').addEventListener('change', loadHistoryCharts);
-
-function buildChart(canvasId, label, labels, data, color) {
-  const ctx = document.getElementById(canvasId).getContext('2d');
-  if (charts[canvasId]) charts[canvasId].destroy();
-  charts[canvasId] = new Chart(ctx, {
-    type: 'line',
-    data: { labels, datasets: [{ label, data, borderColor: color, tension: .25, pointRadius: 0 }] },
-    options: { responsive: true, scales: { x: { display: false } } }
-  });
-}
-
-// ---------------- Audit history ----------------
-async function loadAudit() {
-  const severity = document.getElementById('auditSeverity').value;
-  const mode = document.getElementById('auditMode').value;
-  const q = new URLSearchParams();
-  if (severity) q.set('severity', severity);
-  if (mode) q.set('mode', mode);
-  const events = await fetch('/api/events?' + q.toString()).then(r => r.json());
-  const search = document.getElementById('auditSearch').value.toLowerCase();
-  const filtered = search ? events.filter(e => e.message.toLowerCase().includes(search)) : events;
-  const tbody = document.querySelector('#auditTable tbody');
-  tbody.innerHTML = filtered.slice().reverse().map(e => `
-    <tr>
-      <td>${new Date(e.timestamp).toLocaleString()}</td>
-      <td>${e.type}</td>
-      <td>${e.severity || ''}</td>
-      <td>${typeof e.temperature === 'number' ? e.temperature.toFixed(1) : ''}</td>
-      <td>${e.mode || ''}</td>
-      <td>${e.message}</td>
-      <td>${e.acknowledged ? '✅' : '—'}</td>
-    </tr>`).join('');
-}
-document.getElementById('auditRefresh').addEventListener('click', loadAudit);
-document.getElementById('auditSearch').addEventListener('input', loadAudit);
-document.getElementById('auditSeverity').addEventListener('change', loadAudit);
-document.getElementById('auditMode').addEventListener('change', loadAudit);
-document.getElementById('exportCsvBtn').addEventListener('click', () => window.location = '/api/export/csv');
-document.getElementById('exportJsonBtn').addEventListener('click', () => window.location = '/api/export/json');
-
-// ---------------- Alerts table ----------------
-async function loadAlertsTable() {
-  const alerts = await fetch('/api/alerts').then(r => r.json());
-  const tbody = document.querySelector('#alertsTable tbody');
-  tbody.innerHTML = alerts.slice().reverse().map(a => `
-    <tr>
-      <td>${new Date(a.timestamp).toLocaleString()}</td>
-      <td>${a.type}</td>
-      <td>${a.severity}</td>
-      <td>${a.message}</td>
-      <td>${a.acknowledged ? 'Acknowledged' : (a.muted ? 'Muted' : 'Active')}</td>
-      <td>
-        ${!a.acknowledged ? `<button data-ack="${a.id}">Ack</button>` : ''}
-        ${!a.muted ? `<button data-mute="${a.id}">Mute</button>` : ''}
-      </td>
-    </tr>`).join('');
-  tbody.querySelectorAll('[data-ack]').forEach(b => b.addEventListener('click', () => socket.emit('alert:ack', { id: b.dataset.ack, source: 'dashboard' })));
-  tbody.querySelectorAll('[data-mute]').forEach(b => b.addEventListener('click', () => socket.emit('alert:mute', { id: b.dataset.mute })));
-}
-socket.on('alert:new', loadAlertsTable);
-socket.on('alert:updated', loadAlertsTable);
-
-// ---------------- Settings ----------------
-async function loadSettingsForm() {
-  const s = await fetch('/api/settings').then(r => r.json());
-  const form = document.getElementById('settingsForm');
-  for (const key of Object.keys(s)) {
-    const field = form.elements[key];
-    if (!field) continue;
-    if (field.type === 'checkbox') field.checked = !!s[key];
-    else field.value = s[key];
-  }
-}
-loadSettingsForm();
-
-document.getElementById('settingsForm').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const form = e.target;
-  const body = {
-    deviceName: form.deviceName.value,
-    deviceId: form.deviceId.value,
-    tempMin: parseFloat(form.tempMin.value),
-    tempMax: parseFloat(form.tempMax.value),
-    warningMargin: parseFloat(form.warningMargin.value),
-    criticalMargin: parseFloat(form.criticalMargin.value),
-    alertCooldownMs: parseInt(form.alertCooldownMs.value, 10),
-    voiceAlertsEnabled: form.voiceAlertsEnabled.checked,
-    telegramEnabled: form.telegramEnabled.checked
+  // ======================== STATE ========================
+  const S = {
+    sensors: { temperature: null, humidity: null, vibration: false, sensorHealth: true, lastUpdate: null },
+    device: { deviceId: 'VaxGuard-01', mode: 'LIVE', online: false, lastSeen: null, uptime: 0 },
+    risk: { score: 0, level: 'GOOD', factors: [], trend: 'STABLE', confidence: 'LOW' },
+    prediction: { direction: 'STABLE', estimatedCrossing: null, confidence: 'LOW', reason: '' },
+    condition: 'INSUFFICIENT_DATA',
+    alerts: [],
+    incidents: [],
+    audit: [],
+    history: [],
+    settings: {},
+    voiceAlertsEnabled: true,
+    voiceAlertsUnlocked: false,
+    notifUnread: 0,
+    charts: {}
   };
-  const res = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-  const result = await res.json();
-  document.getElementById('settingsResult').textContent = res.ok ? 'Settings saved.' : ('Error: ' + result.error);
-});
 
-// ---------------- Self-test ----------------
-document.getElementById('runSelfTestBtn').addEventListener('click', async () => {
-  const results = await fetch('/api/selftest').then(r => r.json());
-  const grid = document.getElementById('selfTestGrid');
-  grid.innerHTML = Object.entries(results).map(([k, v]) => `
-    <div class="card">
-      <div class="card-label">${k}</div>
-      <div class="card-value" style="color:${v.status === 'PASS' ? 'var(--green)' : v.status === 'FAIL' ? 'var(--red)' : 'var(--amber)'}">${v.status}</div>
-      <div class="small-note">${v.detail || ''}</div>
-    </div>`).join('');
-});
+  const socket = io({ transports: ['websocket', 'polling'] });
 
-// ---------------- Reports ----------------
-document.getElementById('genReportBtn').addEventListener('click', async () => {
-  const kind = document.getElementById('reportKind').value;
-  const report = await fetch('/api/report/' + kind).then(r => r.json());
-  document.getElementById('reportOutput').textContent = JSON.stringify(report, null, 2);
-});
+  // ======================== DOM HELPERS ========================
+  const $ = (sel) => document.querySelector(sel);
+  const $$ = (sel) => document.querySelectorAll(sel);
 
-// ---------------- Location ----------------
-document.getElementById('getLocationBtn').addEventListener('click', () => {
-  if (!navigator.geolocation) {
-    document.getElementById('loc-status').textContent = 'Location unavailable (browser geolocation not supported).';
-    return;
+  function toast(msg, type = 'info') {
+    const el = document.createElement('div');
+    el.className = `toast ${type}`;
+    el.textContent = msg;
+    $('#toasts').appendChild(el);
+    setTimeout(() => el.remove(), 4500);
   }
-  navigator.geolocation.getCurrentPosition(async (pos) => {
-    const { latitude, longitude } = pos.coords;
-    await fetch('/api/location', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lat: latitude, lng: longitude }) });
-    document.getElementById('loc-latlng').textContent = `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
-    document.getElementById('loc-status').textContent = 'Location obtained.';
-    const link = document.getElementById('openMapLink');
-    link.href = `https://www.google.com/maps?q=${latitude},${longitude}`;
-    link.style.display = 'inline-block';
-  }, (err) => {
-    document.getElementById('loc-status').textContent = 'Location unavailable (' + err.message + ').';
+
+  function fmtTime(iso) {
+    if (!iso) return '—';
+    try {
+      return new Date(iso).toLocaleTimeString();
+    } catch { return iso; }
+  }
+
+  function fmtUptime(sec) {
+    if (sec == null) return '—';
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    return h > 0 ? `${h}h ${m}m` : `${m}m ${s}s`;
+  }
+
+  // ======================== NAVIGATION ========================
+  function showView(name) {
+    $$('.view').forEach(v => v.classList.remove('active'));
+    $$('.nav-item').forEach(n => n.classList.remove('active'));
+    const view = $(`#view-${name}`);
+    const nav = $(`.nav-item[data-view="${name}"]`);
+    if (view) view.classList.add('active');
+    if (nav) nav.classList.add('active');
+    $('#sidebar')?.classList.remove('open');
+  }
+
+  $$('.nav-item').forEach(btn => {
+    btn.addEventListener('click', () => showView(btn.dataset.view));
   });
-});
-fetch('/api/location').then(r => r.json()).then(loc => {
-  if (loc && loc.lat) {
-    document.getElementById('loc-latlng').textContent = `${loc.lat.toFixed(5)}, ${loc.lng.toFixed(5)}`;
-    document.getElementById('loc-status').textContent = 'Last known location loaded.';
-  } else {
-    document.getElementById('loc-status').textContent = 'Location unavailable';
+
+  $('#menuToggle')?.addEventListener('click', () => {
+    $('#sidebar').classList.toggle('open');
+  });
+
+  // ======================== CHARTS ========================
+  function makeChart(canvasId, label, color) {
+    const ctx = $(canvasId)?.getContext('2d');
+    if (!ctx) return null;
+    return new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [{
+          label,
+          data: [],
+          borderColor: color,
+          backgroundColor: color + '22',
+          fill: true,
+          tension: 0.3,
+          pointRadius: 0,
+          borderWidth: 2
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: { duration: 0 },
+        scales: {
+          x: { display: false },
+          y: {
+            grid: { color: 'rgba(255,255,255,0.05)' },
+            ticks: { color: '#8b9aab', font: { size: 10 } }
+          }
+        },
+        plugins: { legend: { display: false } }
+      }
+    });
   }
-});
-if (latest) document.getElementById('loc-device').textContent = latest.settings?.deviceId || '--';
-socket.on('dashboard:update', p => { document.getElementById('loc-device').textContent = p.settings.deviceId; });
 
-// ---------------- Emergency panel ----------------
-document.getElementById('emTelegramTest').addEventListener('click', async () => {
-  const result = await fetch('/api/telegram/test', { method: 'POST' }).then(r => r.json());
-  document.getElementById('emCallResult').textContent = result.sent ? 'Telegram test sent successfully.' : ('Telegram not sent: ' + result.reason);
-});
-document.getElementById('emCallBtn').addEventListener('click', async () => {
-  const testMode = document.getElementById('testAlertMode').checked;
-  if (testMode) {
-    document.getElementById('emCallResult').textContent = 'TEST ALERT MODE is on - no real call attempted.';
-    return;
+  function initCharts() {
+    S.charts.cmdTemp = makeChart('#cmdTempChart', 'Temp', '#3b9eff');
+    S.charts.liveTemp = makeChart('#liveTempChart', 'Temp', '#3b9eff');
+    S.charts.liveHum = makeChart('#liveHumChart', 'Humidity', '#22c55e');
+    S.charts.risk = makeChart('#riskChart', 'Risk', '#f97316');
   }
-  const result = await fetch('/api/emergency/call', { method: 'POST' }).then(r => r.json());
-  document.getElementById('emCallResult').textContent = result.message;
-});
-document.getElementById('emAckAll').addEventListener('click', () => {
-  drawerAlerts.filter(a => !a.acknowledged).forEach(a => socket.emit('alert:ack', { id: a.id, source: 'emergency-panel' }));
-});
-document.getElementById('emMuteAll').addEventListener('click', () => {
-  drawerAlerts.forEach(a => socket.emit('alert:mute', { id: a.id }));
-});
 
-// ---------------- Voice assistant ----------------
-let recognition = null;
-let listening = false;
-let voiceAlertsEnabled = true;
-let lastSpokenAlertId = null;
+  function pushChart(chart, value, maxPoints = 60) {
+    if (!chart || value == null || isNaN(value)) return;
+    const labels = chart.data.labels;
+    const data = chart.data.datasets[0].data;
+    labels.push('');
+    data.push(value);
+    if (labels.length > maxPoints) {
+      labels.shift();
+      data.shift();
+    }
+    chart.update('none');
+  }
 
-function speak(text) {
-  if (!('speechSynthesis' in window)) return;
-  const utter = new SpeechSynthesisUtterance(text);
-  window.speechSynthesis.speak(utter);
-}
+  // ======================== UI UPDATE ========================
+  function updateUI() {
+    const t = S.sensors.temperature;
+    const h = S.sensors.humidity;
 
-function logTranscript(who, text) {
-  const el = document.getElementById('voiceTranscript');
-  const line = document.createElement('div');
-  line.textContent = `${who}: ${text}`;
-  el.appendChild(line);
-  el.scrollTop = el.scrollHeight;
-}
+    $('#tempValue').textContent = t != null ? t.toFixed(1) : '—';
+    $('#humValue').textContent = h != null ? h.toFixed(0) : '—';
+    $('#vibValue').textContent = S.sensors.vibration ? 'DETECTED' : 'IDLE';
+    $('#vibValue').style.color = S.sensors.vibration ? 'var(--warning)' : '';
 
-function answerVoiceQuery(q) {
-  if (!latest) return "I don't have live data yet.";
-  const s = q.toLowerCase();
-  if (s.includes('temperature')) return `Temperature is ${fmtTemp(latest.temperature)}, mode is ${latest.mode}.`;
-  if (s.includes('safe') || s.includes('vaccine')) return `Cold-chain condition is currently ${latest.advisory.result.replace('_',' ')}. ${latest.advisory.reason}`;
-  if (s.includes('risk')) return `Current risk score is ${latest.risk.score} out of 100, classified as ${latest.risk.category.replace('_',' ')}.`;
-  if (s.includes('vibration')) return latest.vibration ? 'Yes, vibration is currently detected.' : `No vibration currently detected. ${latest.risk.vibration.countLast10Min} events in the last 10 minutes.`;
-  if (s.includes('alert')) return drawerAlerts.length ? `There are ${drawerAlerts.length} alerts. Most recent: ${drawerAlerts[drawerAlerts.length-1].message}` : 'No alerts recorded today.';
-  if (s.includes('should i do') || s.includes('recommended')) return latest.earlyWarning.recommendedAction;
-  if (s.includes('sensor')) return latest.sensorFault ? 'Sensor fault detected.' : `Sensor is working. Sensor health score is ${latest.sensorHealth.score} percent.`;
-  if (s.includes('status') || s.includes('device')) return `Device is ${latest.deviceOnline ? 'online' : 'offline'}, mode is ${latest.mode}, state is ${latest.currentState}.`;
-  return "I can answer questions about temperature, risk, vibration, alerts, sensor status, or device status.";
-}
+    const cond = S.condition || 'INSUFFICIENT_DATA';
+    const condEl = $('#conditionPanel');
+    const condVal = $('#conditionValue');
+    condVal.textContent = cond.replace(/_/g, ' ');
+    condEl.className = 'panel status-hero ' + cond.toLowerCase();
+    $('#conditionSub').textContent = S.device.mode === 'DEMO' ? 'DEMO SIMULATION' : (S.device.online ? 'REAL SENSOR' : 'DEVICE OFFLINE');
 
-const SpeechRecognitionImpl = window.SpeechRecognition || window.webkitSpeechRecognition;
-if (!SpeechRecognitionImpl) {
-  document.getElementById('voiceUnsupported').style.display = 'block';
-  document.getElementById('voiceToggle').disabled = true;
-} else {
-  recognition = new SpeechRecognitionImpl();
-  recognition.continuous = false;
-  recognition.lang = 'en-US';
-  recognition.onresult = (event) => {
-    const text = event.results[0][0].transcript;
-    logTranscript('You', text);
-    const answer = answerVoiceQuery(text);
-    logTranscript('VaxGuard', answer);
-    speak(answer);
-  };
-  recognition.onend = () => { listening = false; updateVoiceUI(); };
-}
+    $('#riskValue').textContent = S.risk.score;
+    $('#riskLevel').textContent = S.risk.level;
+    $('#bigRiskScore').textContent = S.risk.score;
+    $('#bigRiskLevel').textContent = S.risk.level;
+    $('#riskTrend').textContent = 'Trend: ' + (S.risk.trend || 'STABLE');
 
-function updateVoiceUI() {
-  document.getElementById('voiceStatus').textContent = listening ? 'ON' : 'OFF';
-  document.getElementById('voiceToggle').textContent = listening ? '⏹️ Stop Listening' : '🎙️ Start Listening';
-}
-document.getElementById('voiceToggle').addEventListener('click', () => {
-  if (!recognition) return;
-  if (listening) { recognition.stop(); }
-  else { recognition.start(); listening = true; }
-  updateVoiceUI();
-});
-document.getElementById('voiceAlertsToggle').addEventListener('click', (e) => {
-  voiceAlertsEnabled = !voiceAlertsEnabled;
-  e.target.textContent = `🔊 Voice Alerts: ${voiceAlertsEnabled ? 'ON' : 'OFF'}`;
-});
+    const arc = $('#gaugeArc');
+    if (arc) {
+      const pct = Math.min(100, S.risk.score) / 100;
+      const len = 158 * pct;
+      arc.style.strokeDasharray = `${len} 158`;
+      const colors = { GOOD: '#22c55e', WATCH: '#eab308', WARNING: '#f97316', HIGH: '#ef4444', CRITICAL: '#dc2626' };
+      arc.style.stroke = colors[S.risk.level] || '#22c55e';
+    }
 
-function maybeSpeakAlert(alert) {
-  if (!voiceAlertsEnabled) return;
-  if (!['WARNING', 'HIGH', 'CRITICAL', 'DANGEROUS'].includes(alert.severity)) return;
-  if (lastSpokenAlertId === alert.id) return;
-  lastSpokenAlertId = alert.id;
-  speak(alert.message);
-}
+    const fl = $('#riskFactors');
+    if (S.risk.factors && S.risk.factors.length) {
+      fl.innerHTML = S.risk.factors.map(f =>
+        `<li><span>${f.name}</span><span>+${f.points}</span></li>`
+      ).join('');
+    } else {
+      fl.innerHTML = '<li class="muted">No active risk factors</li>';
+    }
 
-// initial chart load if analytics tab becomes active later
+    let adv = 'Observed conditions within configured monitoring limits.';
+    if (S.risk.score >= 80) adv = 'Critical condition. Inspect cold-chain equipment immediately.';
+    else if (S.risk.score >= 60) adv = 'Elevated risk. Verify cooling system and recent handling.';
+    else if (S.risk.score >= 40) adv = 'Warning: temperature approaching limits. Monitor closely.';
+    else if (S.risk.score >= 20) adv = 'Watch status. Minor deviation detected.';
+    if (S.prediction.reason) adv += ' ' + S.prediction.reason;
+    $('#advisoryText').textContent = adv;
+    $('#riskAction').textContent = adv;
+    $('#earlyAdvisory').textContent = adv;
+
+    $('#predDirection').textContent = S.prediction.direction || 'STABLE';
+    $('#predConfidence').textContent = S.prediction.confidence || 'LOW';
+    $('#predReason').textContent = S.prediction.reason || 'Collecting baseline…';
+    $('#predCrossing').textContent = S.prediction.estimatedCrossing
+      ? `Estimated threshold crossing: ~${S.prediction.estimatedCrossing} min`
+      : '';
+
+    $('#deviceId').textContent = S.device.deviceId || 'VaxGuard-01';
+    const modeBadge = $('#modeBadge');
+    modeBadge.textContent = S.device.mode || 'LIVE';
+    modeBadge.className = 'mode-badge' + (S.device.mode === 'DEMO' ? ' demo' : '');
+
+    $('#devOnline').textContent = S.device.online ? 'Yes' : 'No';
+    $('#devLastSeen').textContent = fmtTime(S.device.lastSeen);
+    $('#devUptime').textContent = fmtUptime(S.device.uptime);
+
+    $('#dhId').textContent = S.device.deviceId;
+    $('#dhOnline').textContent = S.device.online ? 'ONLINE' : 'OFFLINE';
+    $('#dhMode').textContent = S.device.mode;
+    $('#dhFw').textContent = S.device.firmware || '—';
+    $('#dhUptime').textContent = fmtUptime(S.device.uptime);
+    $('#dhRssi').textContent = S.device.wifiRssi != null ? S.device.wifiRssi + ' dBm' : '—';
+    $('#dhHeap').textContent = S.device.freeHeap != null ? S.device.freeHeap : '—';
+    $('#dhLast').textContent = fmtTime(S.device.lastSeen);
+
+    const healthy = S.sensors.sensorHealth !== false;
+    $('#sensorHealthBar').style.width = healthy ? '96%' : '35%';
+    $('#sensorHealthText').textContent = healthy ? 'Sensors reporting valid data' : 'Sensor fault — check DHT11';
+    $('#dhtStatus').textContent = healthy ? 'OK' : 'FAULT';
+    $('#dhtLast').textContent = fmtTime(S.sensors.lastUpdate);
+    $('#vibStatus').textContent = S.sensors.vibration ? 'ACTIVE' : 'IDLE';
+
+    if (S.sensors.lastUpdate) {
+      const age = Math.round((Date.now() - new Date(S.sensors.lastUpdate).getTime()) / 1000);
+      $('#dataFreshness').textContent = age < 10 ? 'Fresh (<10s)' : `Last update ${age}s ago`;
+    }
+
+    updateTwin();
+
+    const cs = $('#connStatus');
+    if (S.device.online) {
+      cs.className = 'conn-status online';
+      cs.querySelector('.label').textContent = 'Device Online';
+    } else {
+      cs.className = 'conn-status offline';
+      cs.querySelector('.label').textContent = 'Device Offline';
+    }
+
+    if (S.risk.level === 'CRITICAL' || S.risk.level === 'HIGH') {
+      const ep = $('#emergencyPanel');
+      ep.classList.remove('hidden');
+      $('#emSeverity').textContent = S.risk.level;
+      $('#emTitle').textContent = S.risk.level === 'CRITICAL' ? 'Critical Cold-Chain Excursion' : 'High Risk Condition';
+      $('#emTemp').textContent = t != null ? t.toFixed(1) + '°C' : '—';
+      $('#emHum').textContent = h != null ? h.toFixed(0) + '%' : '—';
+      $('#emRisk').textContent = S.risk.score + '/100';
+      $('#emAction').textContent = adv;
+    }
+
+    pushChart(S.charts.cmdTemp, t);
+    pushChart(S.charts.liveTemp, t);
+    pushChart(S.charts.liveHum, h);
+    pushChart(S.charts.risk, S.risk.score);
+  }
+
+  function updateTwin() {
+    const set = (id, state, cls) => {
+      const el = $(id);
+      if (!el) return;
+      el.textContent = state;
+      el.parentElement.className = 'twin-node ' + (cls || '');
+    };
+    set('#twinEspState', S.device.online ? 'ONLINE' : 'OFFLINE', S.device.online ? 'online' : 'fault');
+    set('#twinDhtState', S.sensors.sensorHealth ? 'OK' : 'FAULT', S.sensors.sensorHealth ? 'online' : 'fault');
+    set('#twinVibState', S.sensors.vibration ? 'ACTIVE' : 'IDLE', S.sensors.vibration ? 'active' : 'online');
+    const warning = S.risk.score >= 40 || !S.sensors.sensorHealth;
+    set('#twinGreenState', warning ? 'OFF' : 'ON', warning ? '' : 'online');
+    set('#twinRedState', warning ? 'ON' : 'OFF', warning ? 'fault' : '');
+  }
+
+  // ======================== TABLES ========================
+  function refreshAlertsTable() {
+    const tb = $('#alertsTable tbody');
+    if (!tb) return;
+    tb.innerHTML = S.alerts.slice(0, 50).map(a => `
+      <tr>
+        <td>${fmtTime(a.timestamp)}</td>
+        <td><span style="color:var(--${a.severity === 'CRITICAL' ? 'critical' : a.severity === 'HIGH' ? 'high' : 'warning'})">${a.severity}</span></td>
+        <td>${a.title}</td>
+        <td>${a.temperature != null ? a.temperature.toFixed(1) : '—'}</td>
+        <td>${a.riskScore ?? '—'}</td>
+        <td>${a.acknowledged ? '✓' : `<button class="btn sm" data-ack="${a.id}">Ack</button>`}</td>
+      </tr>
+    `).join('') || '<tr><td colspan="6" class="muted">No alerts</td></tr>';
+
+    tb.querySelectorAll('[data-ack]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        await fetch('/api/alerts/acknowledge', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: btn.dataset.ack })
+        });
+      });
+    });
+  }
+
+  function refreshIncidents() {
+    const tb = $('#incidentsTable tbody');
+    if (!tb) return;
+    tb.innerHTML = S.incidents.slice(0, 30).map(i => `
+      <tr>
+        <td>${i.id}</td>
+        <td>${i.trigger}</td>
+        <td>${i.severity}</td>
+        <td>${i.status}</td>
+        <td>${i.peakTemp != null ? i.peakTemp.toFixed(1) : '—'}</td>
+        <td>${fmtTime(i.startTime)}</td>
+        <td>${i.status !== 'RESOLVED' && !i.acknowledged ? `<button class="btn sm" data-iack="${i.id}">Ack</button>` : ''}</td>
+      </tr>
+    `).join('') || '<tr><td colspan="7" class="muted">No incidents</td></tr>';
+
+    tb.querySelectorAll('[data-iack]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        await fetch('/api/incidents/acknowledge', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: btn.dataset.iack })
+        });
+      });
+    });
+
+    const tl = $('#timelineList');
+    const latest = S.incidents[0];
+    if (latest && latest.timeline) {
+      tl.innerHTML = latest.timeline.map(e =>
+        `<li><strong>${fmtTime(e.time)}</strong> — ${e.event}: ${e.detail || ''}</li>`
+      ).join('');
+    }
+  }
+
+  function refreshAudit() {
+    const tb = $('#auditTable tbody');
+    if (!tb) return;
+    tb.innerHTML = S.audit.slice(0, 80).map(a => `
+      <tr>
+        <td>${fmtTime(a.timestamp)}</td>
+        <td>${a.event}</td>
+        <td>${JSON.stringify(a.details || {}).slice(0, 60)}</td>
+        <td>${a.id}</td>
+      </tr>
+    `).join('') || '<tr><td colspan="4" class="muted">Empty</td></tr>';
+  }
+
+  function refreshLiveTable() {
+    const tb = $('#liveTable tbody');
+    if (!tb) return;
+    tb.innerHTML = S.history.slice(-20).reverse().map(r => `
+      <tr>
+        <td>${fmtTime(r.timestamp)}</td>
+        <td>${r.temperature != null ? r.temperature.toFixed(1) : '—'}</td>
+        <td>${r.humidity != null ? r.humidity.toFixed(0) : '—'}</td>
+        <td>${r.vibration ? 'YES' : '—'}</td>
+        <td>${r.mode || ''}</td>
+      </tr>
+    `).join('');
+  }
+
+  // ======================== SOCKET ========================
+  socket.on('connect', () => {
+    $('#connStatus .label').textContent = 'Server Connected';
+    toast('Connected to VaxGuard server', 'info');
+    bootstrap();
+  });
+
+  socket.on('disconnect', () => {
+    $('#connStatus').className = 'conn-status offline';
+    $('#connStatus .label').textContent = 'Server Disconnected';
+  });
+
+  socket.on('sensor:update', (payload) => {
+    if (payload.sensors) Object.assign(S.sensors, payload.sensors);
+    if (payload.device) Object.assign(S.device, payload.device);
+    if (payload.risk) S.risk = payload.risk;
+    if (payload.prediction) S.prediction = payload.prediction;
+    if (payload.condition) S.condition = payload.condition;
+    if (payload.sensors) {
+      S.history.push({
+        temperature: payload.sensors.temperature,
+        humidity: payload.sensors.humidity,
+        vibration: payload.sensors.vibration,
+        timestamp: payload.sensors.lastUpdate || new Date().toISOString(),
+        mode: payload.device?.mode
+      });
+      if (S.history.length > 500) S.history.shift();
+    }
+    updateUI();
+    refreshLiveTable();
+  });
+
+  socket.on('risk:update', (r) => { S.risk = r; updateUI(); });
+  socket.on('prediction:update', (p) => { S.prediction = p; updateUI(); });
+
+  socket.on('alert:new', (a) => {
+    S.alerts.unshift(a);
+    S.notifUnread++;
+    updateNotifBadge();
+    refreshAlertsTable();
+    toast(`${a.severity}: ${a.title}`, a.severity === 'CRITICAL' ? 'critical' : 'warning');
+    $('#lastEvent').textContent = `${a.severity} — ${a.title}`;
+  });
+
+  socket.on('alert:update', () => refreshAlertsTable());
+  socket.on('incident:new', (i) => { S.incidents.unshift(i); refreshIncidents(); });
+  socket.on('incident:update', (i) => {
+    const idx = S.incidents.findIndex(x => x.id === i.id);
+    if (idx >= 0) S.incidents[idx] = i;
+    else S.incidents.unshift(i);
+    refreshIncidents();
+  });
+
+  socket.on('audit:new', (e) => {
+    S.audit.unshift(e);
+    refreshAudit();
+  });
+
+  socket.on('vibration:event', () => {
+    $('#lastEvent').textContent = 'Vibration event detected';
+    toast('Vibration event', 'warning');
+  });
+
+  socket.on('device:offline', () => {
+    S.device.online = false;
+    updateUI();
+    toast('Device went offline', 'critical');
+  });
+
+  // ======================== VOICE ALERT ENGINE (System B) ========================
+  socket.on('voice:alert', (payload) => {
+    if (!S.voiceAlertsEnabled) return;
+    const log = $('#voiceAlertLog');
+    const li = document.createElement('li');
+    li.textContent = `[${new Date().toLocaleTimeString()}] ${payload.severity}: ${payload.message}`;
+    if (log.querySelector('.muted')) log.innerHTML = '';
+    log.prepend(li);
+
+    if (S.voiceAlertsUnlocked && window.speechSynthesis) {
+      const u = new SpeechSynthesisUtterance(payload.message);
+      u.rate = 0.95;
+      u.pitch = 1;
+      window.speechSynthesis.speak(u);
+    }
+  });
+
+  $('#enableVoiceAlerts')?.addEventListener('click', () => {
+    S.voiceAlertsUnlocked = true;
+    const u = new SpeechSynthesisUtterance('VaxGuard voice alerts enabled.');
+    window.speechSynthesis?.speak(u);
+    $('#voiceAlertStatus').textContent = 'Active — browser audio unlocked';
+    toast('Voice alerts enabled');
+  });
+
+  $('#testVoiceAlert')?.addEventListener('click', () => {
+    S.voiceAlertsUnlocked = true;
+    const msg = 'Test alert. This is the VaxGuard autonomous voice alert engine.';
+    const u = new SpeechSynthesisUtterance(msg);
+    window.speechSynthesis?.speak(u);
+    toast('Test voice alert spoken');
+  });
+
+  $('#voiceAlertToggle')?.addEventListener('change', (e) => {
+    S.voiceAlertsEnabled = e.target.checked;
+  });
+
+  $('#voiceCooldown')?.addEventListener('change', async (e) => {
+    await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alertCooldownSec: Number(e.target.value) })
+    });
+  });
+
+  // ======================== VOICE ASSISTANT (System A) ========================
+  let recognition = null;
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+  if (SpeechRecognition) {
+    recognition = new SpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = true;
+    recognition.lang = 'en-US';
+
+    recognition.onstart = () => {
+      $('#voiceStatus').textContent = 'LISTENING';
+      $('#micBtn').classList.add('listening');
+    };
+    recognition.onend = () => {
+      $('#voiceStatus').textContent = 'IDLE';
+      $('#micBtn').classList.remove('listening');
+    };
+    recognition.onerror = (e) => {
+      $('#voiceStatus').textContent = 'ERROR';
+      $('#transcript').textContent = 'Speech recognition error: ' + e.error;
+      $('#micBtn').classList.remove('listening');
+    };
+    recognition.onresult = async (event) => {
+      let final = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        if (event.results[i].isFinal) final += event.results[i][0].transcript;
+      }
+      if (final) {
+        $('#transcript').textContent = final;
+        await askVoice(final);
+      }
+    };
+  }
+
+  $('#micBtn')?.addEventListener('click', () => {
+    if (!recognition) {
+      $('#transcript').textContent = 'Speech recognition not supported in this browser. Use suggested questions or type.';
+      return;
+    }
+    try {
+      recognition.start();
+    } catch (e) {}
+  });
+
+  async function askVoice(question) {
+    $('#voiceStatus').textContent = 'THINKING';
+    $('#aiResponse').textContent = '…';
+    try {
+      const res = await fetch('/api/voice/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question })
+      });
+      const data = await res.json();
+      $('#aiResponse').textContent = data.answer || 'No response';
+      $('#voiceStatus').textContent = 'RESPONDING';
+
+      const hist = $('#convHistory');
+      hist.innerHTML += `<div class="q">You: ${question}</div><div class="a">AI: ${data.answer}</div>`;
+
+      if ($('#speakResponse')?.checked && window.speechSynthesis) {
+        const u = new SpeechSynthesisUtterance(data.answer);
+        u.rate = 1;
+        window.speechSynthesis.speak(u);
+      }
+      setTimeout(() => { $('#voiceStatus').textContent = 'IDLE'; }, 800);
+    } catch (err) {
+      $('#aiResponse').textContent = 'Failed to reach voice service.';
+      $('#voiceStatus').textContent = 'ERROR';
+    }
+  }
+
+  $$('.chip').forEach(c => {
+    c.addEventListener('click', () => askVoice(c.dataset.q));
+  });
+
+  $('#clearConv')?.addEventListener('click', () => {
+    $('#convHistory').innerHTML = '';
+    $('#aiResponse').textContent = '';
+    $('#transcript').textContent = 'Click the microphone and ask a question…';
+  });
+
+  $('#voiceQuickBtn')?.addEventListener('click', () => showView('voice'));
+
+  // ======================== DEMO ========================
+  $$('[data-demo]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const state = btn.dataset.demo;
+      await fetch('/api/demo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'inject', state })
+      });
+      toast(`Demo state: ${state}`, 'info');
+    });
+  });
+
+  // ======================== SETTINGS ========================
+  $('#saveSettings')?.addEventListener('click', async () => {
+    const body = {
+      tempMin: Number($('#setTempMin').value),
+      tempMax: Number($('#setTempMax').value),
+      alertCooldownSec: Number($('#setCooldown').value)
+    };
+    await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    $('#tempRange').textContent = `${body.tempMin} – ${body.tempMax}`;
+    toast('Settings saved');
+  });
+
+  // ======================== TELEGRAM ========================
+  $('#tgTest')?.addEventListener('click', async () => {
+    const res = await fetch('/api/telegram/test', { method: 'POST' });
+    const data = await res.json();
+    if (res.ok) toast('Telegram test sent');
+    else toast(data.error || 'Telegram failed', 'critical');
+  });
+
+  $('#tgToggle')?.addEventListener('change', async (e) => {
+    await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ telegramEnabled: e.target.checked })
+    });
+  });
+
+  // ======================== SELF TEST ========================
+  $('#runSelfTest')?.addEventListener('click', async () => {
+    const res = await fetch('/api/selftest', { method: 'POST' });
+    const data = await res.json();
+    $('#selfTestOut').textContent = JSON.stringify(data, null, 2);
+  });
+
+  // ======================== REPORTS ========================
+  $('#genDaily')?.addEventListener('click', () => {
+    const t = S.sensors.temperature;
+    $('#reportOut').textContent = [
+      'VAXGUARD X — DAILY MONITORING SUMMARY',
+      `Generated: ${new Date().toISOString()}`,
+      `Device: ${S.device.deviceId}`,
+      `Mode: ${S.device.mode}`,
+      `Current Temp: ${t != null ? t.toFixed(1) : 'N/A'}°C`,
+      `Humidity: ${S.sensors.humidity != null ? S.sensors.humidity.toFixed(0) : 'N/A'}%`,
+      `Risk Score: ${S.risk.score}/100 (${S.risk.level})`,
+      `Condition: ${S.condition}`,
+      `Readings this session: ${S.history.length}`,
+      `Open incidents: ${S.incidents.filter(i => i.status !== 'RESOLVED').length}`,
+      `Alerts: ${S.alerts.length}`,
+      '',
+      'Note: This is a monitoring prototype summary, not a medical certificate.'
+    ].join('\n');
+  });
+
+  $('#genIncident')?.addEventListener('click', () => {
+    const open = S.incidents.filter(i => i.status !== 'RESOLVED');
+    $('#reportOut').textContent = open.length
+      ? open.map(i => `${i.id} | ${i.severity} | ${i.trigger} | ${i.status} | peak ${i.peakTemp}`).join('\n')
+      : 'No open incidents.';
+  });
+
+  // ======================== NOTIFICATIONS ========================
+  function updateNotifBadge() {
+    const b = $('#notifBadge');
+    if (S.notifUnread > 0) {
+      b.hidden = false;
+      b.textContent = S.notifUnread > 9 ? '9+' : S.notifUnread;
+    } else b.hidden = true;
+  }
+
+  $('#notifBtn')?.addEventListener('click', () => {
+    const d = $('#notifDrawer');
+    d.classList.toggle('hidden');
+    const list = $('#notifList');
+    list.innerHTML = S.alerts.slice(0, 30).map(a =>
+      `<li><strong>${a.severity}</strong> ${a.title}<br><small>${fmtTime(a.timestamp)}</small></li>`
+    ).join('') || '<li class="muted">No notifications</li>';
+    S.notifUnread = 0;
+    updateNotifBadge();
+  });
+
+  $('#closeNotif')?.addEventListener('click', () => $('#notifDrawer').classList.add('hidden'));
+
+  // ======================== COMMAND PALETTE ========================
+  const commands = [
+    { label: 'Open Command Center', action: () => showView('command') },
+    { label: 'Open Live Monitor', action: () => showView('live') },
+    { label: 'Open Risk Center', action: () => showView('risk') },
+    { label: 'Open Voice Assistant', action: () => showView('voice') },
+    { label: 'Open Alerts', action: () => showView('alerts') },
+    { label: 'Open Emergency', action: () => showView('emergency') },
+    { label: 'Open Demo Simulator', action: () => showView('demo') },
+    { label: 'Open Settings', action: () => showView('settings') },
+    { label: 'Run Self-Test', action: () => { showView('selftest'); $('#runSelfTest').click(); } },
+    { label: 'Enable Voice Alerts', action: () => { showView('voicealerts'); $('#enableVoiceAlerts').click(); } },
+    { label: 'Export History CSV', action: () => { window.location = '/api/export/csv'; } }
+  ];
+
+  function openPalette() {
+    $('#cmdPalette').classList.remove('hidden');
+    $('#cmdInput').value = '';
+    $('#cmdInput').focus();
+    renderCmdResults('');
+  }
+
+  function renderCmdResults(q) {
+    const list = $('#cmdResults');
+    const filtered = commands.filter(c => c.label.toLowerCase().includes(q.toLowerCase()));
+    list.innerHTML = filtered.map((c, i) =>
+      `<li data-idx="${i}" class="${i === 0 ? 'active' : ''}">${c.label}</li>`
+    ).join('');
+    list.querySelectorAll('li').forEach(li => {
+      li.addEventListener('click', () => {
+        const cmd = filtered[Number(li.dataset.idx)];
+        if (cmd) cmd.action();
+        $('#cmdPalette').classList.add('hidden');
+      });
+    });
+  }
+
+  $('#cmdPaletteBtn')?.addEventListener('click', openPalette);
+  document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+      e.preventDefault();
+      openPalette();
+    }
+    if (e.key === 'Escape') {
+      $('#cmdPalette').classList.add('hidden');
+      $('#notifDrawer').classList.add('hidden');
+    }
+  });
+
+  $('#cmdInput')?.addEventListener('input', (e) => renderCmdResults(e.target.value));
+  $('#cmdInput')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      const active = $('#cmdResults li.active');
+      if (active) active.click();
+    }
+  });
+
+  // ======================== THEME ========================
+  $('#themeToggle')?.addEventListener('click', () => {
+    document.body.classList.toggle('theme-dark');
+    document.body.classList.toggle('theme-light');
+  });
+
+  // ======================== SEARCH ========================
+  $('#globalSearch')?.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    const q = e.target.value.trim().toUpperCase();
+    if (!q) return;
+    const found = S.incidents.find(i => i.id.includes(q)) ||
+                  S.alerts.find(a => a.id.includes(q));
+    if (found) {
+      toast(`Found: ${found.id || found.title}`);
+      if (found.trigger) showView('incidents');
+      else showView('alerts');
+    } else {
+      toast('No matching event ID');
+    }
+  });
+
+  // ======================== EMERGENCY BUTTONS ========================
+  $('#emAck')?.addEventListener('click', async () => {
+    const open = S.alerts.find(a => !a.acknowledged && (a.severity === 'CRITICAL' || a.severity === 'HIGH'));
+    if (open) {
+      await fetch('/api/alerts/acknowledge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: open.id })
+      });
+      toast('Alert acknowledged');
+    }
+  });
+
+  $('#emMute')?.addEventListener('click', () => {
+    S.voiceAlertsEnabled = false;
+    $('#voiceAlertToggle').checked = false;
+    window.speechSynthesis?.cancel();
+    toast('Voice alerts muted');
+  });
+
+  // ======================== BOOTSTRAP ========================
+  async function bootstrap() {
+    try {
+      const res = await fetch('/api/status');
+      const data = await res.json();
+      if (data.device) Object.assign(S.device, data.device);
+      if (data.sensors) Object.assign(S.sensors, data.sensors);
+      if (data.risk) S.risk = data.risk;
+      if (data.prediction) S.prediction = data.prediction;
+      if (data.condition) S.condition = data.condition;
+      if (data.settings) {
+        S.settings = data.settings;
+        $('#tgConfigured').textContent = data.settings.telegramConfigured ? 'YES' : 'NO';
+        if (data.settings.tempMin != null) {
+          $('#setTempMin').value = data.settings.tempMin;
+          $('#setTempMax').value = data.settings.tempMax;
+          $('#tempRange').textContent = `${data.settings.tempMin} – ${data.settings.tempMax}`;
+        }
+      }
+      if (data.stats) {
+        $('#statReadings').textContent = data.stats.totalReadings || 0;
+        $('#statVib').textContent = data.stats.vibrationCount || 0;
+        $('#statMax').textContent = data.stats.maxTemp != null ? data.stats.maxTemp.toFixed(1) : '—';
+        $('#statMin').textContent = data.stats.minTemp != null ? data.stats.minTemp.toFixed(1) : '—';
+        $('#vibCount').textContent = data.stats.vibrationCount || 0;
+      }
+      updateUI();
+
+      const [hist, alerts, incidents, audit] = await Promise.all([
+        fetch('/api/history?limit=100').then(r => r.json()),
+        fetch('/api/alerts').then(r => r.json()),
+        fetch('/api/incidents').then(r => r.json()),
+        fetch('/api/audit').then(r => r.json())
+      ]);
+      S.history = hist || [];
+      S.alerts = alerts || [];
+      S.incidents = incidents || [];
+      S.audit = audit || [];
+      refreshLiveTable();
+      refreshAlertsTable();
+      refreshIncidents();
+      refreshAudit();
+    } catch (e) {
+      console.warn('Bootstrap error', e);
+    }
+  }
+
+  // Init
+  initCharts();
+  updateUI();
+})();
