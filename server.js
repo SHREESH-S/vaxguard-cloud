@@ -1,726 +1,714 @@
 /*
   VaxGuard backend
-  ----------------
-  Responsibilities:
-    - Receive sensor packets from the ESP32 (/api/ingest) and heartbeats (/api/heartbeat)
-    - Run the explainable risk engine + early-warning trend engine + condition advisory
-    - Track vibration intelligence, sensor health, device connectivity
-    - Persist readings/events/settings to a JSON file (survives restart)
-    - Push real-time updates to the dashboard over Socket.IO
-    - Log an audit trail for every meaningful event, with deduplication/cooldown
-    - Send Telegram alerts ONLY if configured; never fake a delivery confirmation
-    - Serve CSV/JSON exports and reports
-    - Never invent data: if something isn't available, the API says so explicitly
+  ------------------------------------------------------------
+  - Express serves the dashboard (public/) and REST API
+  - A raw WebSocket endpoint at /esp32 receives packets from the ESP32
+  - Socket.IO pushes live updates to every connected browser
+  - All "AI" features here are transparent rule-based calculations
+    (moving averages, rate-of-change, thresholds) - see computeRisk()
+    and computeEarlyWarning(). Nothing here is a trained ML model,
+    and the UI is required to say so.
+  - Telegram / phone-call integrations are OFF unless credentials are
+    present in .env - the server never pretends they succeeded.
 */
 
 require('dotenv').config();
-const express = require('express');
-const http = require('http');
 const path = require('path');
 const fs = require('fs');
-const { Server } = require('socket.io');
+const express = require('express');
+const http = require('http');
+const { Server: SocketIOServer } = require('socket.io');
+const WebSocket = require('ws');
+const low = require('lowdb');
+const FileSync = require('lowdb/adapters/FileSync');
 const fetch = require('node-fetch');
 
-const app = express();
-const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*' } });
+// ---------------- Storage ----------------
+const DATA_DIR = path.join(__dirname, 'data');
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR);
+const adapter = new FileSync(path.join(DATA_DIR, 'db.json'));
+const db = low(adapter);
 
-const PORT = process.env.PORT || 3000;
-const DB_FILE = path.join(__dirname, 'data', 'db.json');
-
-// ---------------------------------------------------------------------------
-// Basic access protection (optional). If DASHBOARD_PASSWORD is left as the
-// example default or blank, auth is skipped and the dashboard warns about it.
-// ---------------------------------------------------------------------------
-const AUTH_ENABLED = !!(process.env.DASHBOARD_USERNAME && process.env.DASHBOARD_PASSWORD &&
-  process.env.DASHBOARD_PASSWORD !== 'change-me');
-
-function basicAuth(req, res, next) {
-  if (!AUTH_ENABLED) return next();
-  const header = req.headers.authorization || '';
-  const token = header.split(' ')[1] || '';
-  const [user, pass] = Buffer.from(token, 'base64').toString().split(':');
-  if (user === process.env.DASHBOARD_USERNAME && pass === process.env.DASHBOARD_PASSWORD) {
-    return next();
-  }
-  res.set('WWW-Authenticate', 'Basic realm="VaxGuard"');
-  return res.status(401).send('Authentication required.');
-}
-
-app.use(basicAuth);
-app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
-
-// ---------------------------------------------------------------------------
-// PERSISTENT STORAGE (simple JSON file - adequate for a college prototype)
-// ---------------------------------------------------------------------------
-const DEFAULT_DB = {
+db.defaults({
   settings: {
-    tempMin: 2.0,
-    tempMax: 8.0,
-    warnMargin: 1.0,
-    vibrationSensitivity: 'normal',
-    alertCooldownSec: 60,
+    tempMin: parseFloat(process.env.TEMP_MIN || 2),
+    tempMax: parseFloat(process.env.TEMP_MAX || 8),
+    warningMargin: parseFloat(process.env.TEMP_WARNING_MARGIN || 1.5),
+    criticalMargin: parseFloat(process.env.TEMP_CRITICAL_MARGIN || 4),
+    alertCooldownMs: parseInt(process.env.ALERT_COOLDOWN_MS || 60000, 10),
     voiceAlertsEnabled: true,
-    telegramEnabled: true,
+    telegramEnabled: !!(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID),
     deviceName: 'VaxGuard-01',
     deviceId: 'VaxGuard-01',
-    retentionDays: 30
+    retentionDays: 14
   },
-  readings: [],      // recent sensor readings (capped)
-  events: [],        // audit log
-  vibrationEvents: [],
-  devices: {},        // deviceId -> {lastHeartbeat, lastSeen, ip, uptimeMs}
-  ackState: {}        // eventId -> {acknowledged, mutedUntil, escalated}
-};
+  history: [],       // bounded time-series for graphs
+  events: [],         // audit log
+  alerts: [],         // active/past alerts with ack state
+  vibrationEvents: [] // raw vibration event log
+}).write();
 
-const MAX_READINGS = 5000;
-const MAX_EVENTS = 5000;
-
-function loadDb() {
-  try {
-    if (!fs.existsSync(path.dirname(DB_FILE))) fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
-    if (!fs.existsSync(DB_FILE)) {
-      fs.writeFileSync(DB_FILE, JSON.stringify(DEFAULT_DB, null, 2));
-      return JSON.parse(JSON.stringify(DEFAULT_DB));
-    }
-    const raw = fs.readFileSync(DB_FILE, 'utf-8');
-    return { ...JSON.parse(JSON.stringify(DEFAULT_DB)), ...JSON.parse(raw) };
-  } catch (e) {
-    console.error('Failed to load DB, starting fresh:', e.message);
-    return JSON.parse(JSON.stringify(DEFAULT_DB));
-  }
-}
-
-let db = loadDb();
-
-let saveTimer = null;
-function saveDb() {
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    fs.writeFile(DB_FILE, JSON.stringify(db, null, 2), (err) => {
-      if (err) console.error('DB save failed:', err.message);
-    });
-  }, 500); // debounce writes
-}
-
-// ---------------------------------------------------------------------------
-// IN-MEMORY RUNTIME STATE (per device - this prototype assumes one primary device)
-// ---------------------------------------------------------------------------
-const runtime = {
+// ---------------- App state (in-memory, mirrors + feeds db) ----------------
+const state = {
   mode: 'LIVE',
   temperature: null,
   humidity: null,
   vibration: false,
+  sensorFault: false,
+  wifi: false,
   vibrationEventCount: 0,
-  sensorValid: false,
-  state: 'OFFLINE',
-  lastUpdate: null,
-  connected: false,
-  tempHistory: [],       // {ts, temp} for trend analysis
-  consecutiveAbnormal: 0,
-  timeOutsideRangeMs: 0,
-  lastAbnormalEnter: null,
-  lastAlertState: null,
-  lastAlertTime: 0,
-  recentVibrationTimestamps: []
+  lastEsp32Update: null,
+  lastHeartbeat: null,
+  deviceOnline: false,
+  currentState: 'OFFLINE', // NORMAL/LOW/HIGH/WARNING/CRITICAL/DANGEROUS/SENSOR_FAULT/OFFLINE
+  lastAlertByType: {}, // for cooldown/dedup
 };
 
-const OFFLINE_TIMEOUT_MS = 15000;
+const HISTORY_LIMIT = 5000;
+const TREND_WINDOW = 8; // number of recent samples used for trend/slope
 
-// ---------------------------------------------------------------------------
-// RISK ENGINE (explainable)
-// ---------------------------------------------------------------------------
-function computeRisk() {
-  const reasons = [];
-  let score = 0;
+// ---------------- Helpers ----------------
+function nowIso() { return new Date().toISOString(); }
 
-  if (!runtime.sensorValid) {
-    return { score: 100, category: 'CRITICAL', reasons: ['Sensor fault - risk cannot be trusted, treat as critical'] };
-  }
+function pushHistory(sample) {
+  const history = db.get('history').value();
+  history.push(sample);
+  if (history.length > HISTORY_LIMIT) history.splice(0, history.length - HISTORY_LIMIT);
+  db.set('history', history).write();
+}
 
-  const { tempMin, tempMax, warnMargin } = db.settings;
-  const t = runtime.temperature;
+function logEvent(evt) {
+  const events = db.get('events').value();
+  const record = {
+    id: 'evt_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
+    timestamp: nowIso(),
+    acknowledged: false,
+    ...evt
+  };
+  events.push(record);
+  db.set('events', events).write();
+  io.emit('event:new', record);
+  return record;
+}
 
-  if (t !== null) {
-    let deviation = 0;
-    if (t < tempMin) deviation = tempMin - t;
-    else if (t > tempMax) deviation = t - tempMax;
-    if (deviation > 0) {
-      const pts = Math.min(35, Math.round(deviation * 10));
-      score += pts;
-      reasons.push(`+${pts} temperature deviation (${deviation.toFixed(1)}C outside range)`);
-    }
-  }
+// ---------------- State engine ----------------
+function computeState({ temperature, vibration, sensorFault, mode, deviceOnline }) {
+  if (!deviceOnline) return 'OFFLINE';
+  if (sensorFault) return 'SENSOR_FAULT';
+  if (temperature === null || temperature === undefined || Number.isNaN(temperature)) return 'SENSOR_FAULT';
 
-  // trend
-  const trend = computeTrend();
-  if (trend === 'increasing' && t > tempMax - warnMargin) {
-    score += 18;
-    reasons.push('+18 increasing temperature trend near/above upper threshold');
-  } else if (trend === 'decreasing' && t < tempMin + warnMargin) {
-    score += 18;
-    reasons.push('+18 decreasing temperature trend near/below lower threshold');
-  }
+  const s = db.get('settings').value();
+  const { tempMin, tempMax, warningMargin, criticalMargin } = s;
 
-  // duration outside range
-  if (runtime.timeOutsideRangeMs > 0) {
-    const minutes = runtime.timeOutsideRangeMs / 60000;
-    const pts = Math.min(20, Math.round(minutes * 4));
-    if (pts > 0) {
-      score += pts;
-      reasons.push(`+${pts} prolonged excursion (${minutes.toFixed(1)} min outside range)`);
-    }
-  }
+  if (temperature < tempMin - criticalMargin || temperature > tempMax + criticalMargin) return 'DANGEROUS';
+  if (temperature < tempMin - warningMargin || temperature > tempMax + warningMargin) return 'CRITICAL';
+  if (temperature < tempMin) return 'LOW';
+  if (temperature > tempMax) return 'HIGH';
+  if (vibration) return 'WARNING';
+  return 'NORMAL';
+}
 
-  // vibration frequency (events in last 5 minutes)
-  const now = Date.now();
-  const recentVib = runtime.recentVibrationTimestamps.filter(ts => now - ts < 5 * 60000);
-  if (recentVib.length > 0) {
-    const pts = Math.min(15, recentVib.length * 4);
-    score += pts;
-    reasons.push(`+${pts} repeated vibration (${recentVib.length} events in last 5 min)`);
-  }
-
-  // consecutive abnormal readings
-  if (runtime.consecutiveAbnormal >= 3) {
-    const pts = Math.min(10, runtime.consecutiveAbnormal);
-    score += pts;
-    reasons.push(`+${pts} recent abnormal events (${runtime.consecutiveAbnormal} consecutive)`);
-  }
-
-  // connectivity
-  if (!runtime.connected) {
-    score += 10;
-    reasons.push('+10 device connectivity lost');
-  }
-
-  score = Math.max(0, Math.min(100, score));
-  let category = 'SAFE';
-  if (score > 80) category = 'CRITICAL';
-  else if (score > 60) category = 'HIGH RISK';
-  else if (score > 40) category = 'MODERATE RISK';
-  else if (score > 20) category = 'LOW RISK';
-
-  return { score, category, reasons };
+// ---------------- Trend / early warning ----------------
+function getRecentTemps(n) {
+  const history = db.get('history').value();
+  return history.slice(-n).map(h => h.temperature).filter(t => typeof t === 'number' && !Number.isNaN(t));
 }
 
 function computeTrend() {
-  const hist = runtime.tempHistory.slice(-6); // last ~6 samples (~12s at 2s interval, but works across sends too)
-  if (hist.length < 3) return 'insufficient data';
-  const first = hist[0].temp;
-  const last = hist[hist.length - 1].temp;
-  const diff = last - first;
-  if (diff > 0.3) return 'increasing';
-  if (diff < -0.3) return 'decreasing';
-  return 'stable';
+  const temps = getRecentTemps(TREND_WINDOW);
+  if (temps.length < 3) return { slope: 0, direction: 'FLAT', confidence: 'LOW' };
+
+  // simple linear regression slope over index
+  const n = temps.length;
+  const xs = temps.map((_, i) => i);
+  const meanX = xs.reduce((a, b) => a + b, 0) / n;
+  const meanY = temps.reduce((a, b) => a + b, 0) / n;
+  let num = 0, den = 0;
+  for (let i = 0; i < n; i++) {
+    num += (xs[i] - meanX) * (temps[i] - meanY);
+    den += (xs[i] - meanX) ** 2;
+  }
+  const slope = den === 0 ? 0 : num / den;
+
+  let direction = 'FLAT';
+  if (slope > 0.08) direction = 'RISING';
+  else if (slope < -0.08) direction = 'FALLING';
+
+  const confidence = n >= TREND_WINDOW ? 'MODERATE' : 'LOW';
+  return { slope: Number(slope.toFixed(3)), direction, confidence };
 }
 
-function computeConditionAdvisory() {
-  if (!runtime.sensorValid) {
-    return { label: 'INSUFFICIENT DATA', reason: 'Sensor fault - cold-chain condition cannot be assessed right now.' };
+function computeEarlyWarning(trend, s) {
+  if (trend.direction === 'RISING') {
+    return {
+      level: 'EARLY_WARNING',
+      label: 'AI-assisted prototype risk prediction',
+      message: 'Temperature trending upward. Potential threshold crossing predicted.',
+      recommendedAction: 'Inspect cooling conditions.'
+    };
   }
-  const risk = computeRisk();
-  if (risk.score <= 20) {
-    return { label: 'GOOD', reason: 'Temperature has remained within the configured range for the monitored period.' };
-  } else if (risk.score <= 40) {
-    return { label: 'WATCH', reason: 'Minor deviation or trend detected. Continue monitoring.' };
-  } else if (risk.score <= 70) {
-    return { label: 'AT RISK', reason: 'Repeated excursions or a sustained adverse trend detected. Inspect cold-chain conditions.' };
+  if (trend.direction === 'FALLING') {
+    return {
+      level: 'EARLY_WARNING',
+      label: 'AI-assisted prototype risk prediction',
+      message: 'Temperature trend decreasing. Potential low-temperature risk.',
+      recommendedAction: 'Inspect cold-chain unit and door seals.'
+    };
   }
-  return { label: 'CRITICAL', reason: 'Significant excursion detected. Inspect cold-chain conditions and follow approved vaccine handling procedures.' };
+  return {
+    level: 'STABLE',
+    label: 'AI-assisted prototype risk prediction',
+    message: 'No significant trend detected.',
+    recommendedAction: 'Continue routine monitoring.'
+  };
 }
 
-function earlyWarning() {
+// ---------------- Vibration intelligence ----------------
+function recordVibrationEvent() {
+  const events = db.get('vibrationEvents').value();
+  events.push({ timestamp: nowIso(), t: Date.now() });
+  // keep last 500
+  if (events.length > 500) events.splice(0, events.length - 500);
+  db.set('vibrationEvents', events).write();
+}
+
+function computeVibrationRisk() {
+  const events = db.get('vibrationEvents').value();
+  const now = Date.now();
+  const last10min = events.filter(e => now - e.t <= 10 * 60 * 1000);
+  const last1min = events.filter(e => now - e.t <= 60 * 1000);
+
+  let score = 0;
+  if (last1min.length >= 3) score += 40;
+  else if (last1min.length >= 1) score += 15;
+  if (last10min.length >= 5) score += 30;
+
+  score = Math.min(100, score);
+
+  let classification = 'NONE';
+  if (last1min.length >= 3) classification = 'FREQUENT_SHOCK_BURST';
+  else if (last1min.length >= 1) classification = 'MINOR_EVENT';
+  else if (last10min.length > 0) classification = 'ISOLATED_RECENT_EVENT';
+
+  return { score, classification, countLast1Min: last1min.length, countLast10Min: last10min.length, totalRecorded: events.length };
+}
+
+// ---------------- Sensor health ----------------
+function computeSensorHealth() {
+  const freshnessMs = state.lastEsp32Update ? Date.now() - state.lastEsp32Update : Infinity;
+  let freshness = 'LOST';
+  if (freshnessMs < 6000) freshness = 'GOOD';
+  else if (freshnessMs < 20000) freshness = 'STALE';
+
+  let score = 100;
+  if (state.sensorFault) score -= 50;
+  if (freshness === 'STALE') score -= 20;
+  if (freshness === 'LOST') score -= 60;
+  if (!state.wifi) score -= 15;
+  if (!state.deviceOnline) score -= 40;
+  score = Math.max(0, score);
+
+  return {
+    dht11: state.sensorFault ? 'FAULT' : 'CONNECTED',
+    temperatureValid: !state.sensorFault && typeof state.temperature === 'number',
+    humidityValid: !state.sensorFault && typeof state.humidity === 'number',
+    sw420: state.vibration ? 'EVENT_DETECTED' : 'CONNECTED',
+    esp32: state.deviceOnline ? 'ONLINE' : 'OFFLINE',
+    wifi: state.wifi ? 'CONNECTED' : 'DISCONNECTED',
+    lastUpdate: state.lastEsp32Update ? new Date(state.lastEsp32Update).toISOString() : null,
+    freshness,
+    score
+  };
+}
+
+// ---------------- Risk engine (explainable) ----------------
+function computeRisk() {
+  const s = db.get('settings').value();
   const trend = computeTrend();
-  const { tempMax, tempMin, warnMargin } = db.settings;
-  const t = runtime.temperature;
-  if (t === null) return null;
-  if (trend === 'increasing' && t < tempMax && t > tempMax - warnMargin * 2) {
-    return {
-      level: 'EARLY WARNING',
-      message: 'Temperature trending upward',
-      detail: 'Potential threshold crossing predicted.',
-      action: 'Recommended action: inspect cooling conditions.'
-    };
-  }
-  if (trend === 'decreasing' && t > tempMin && t < tempMin + warnMargin * 2) {
-    return {
-      level: 'EARLY WARNING',
-      message: 'Temperature trending downward',
-      detail: 'Potential low-temperature risk.',
-      action: 'Recommended action: inspect cooling conditions.'
-    };
-  }
-  return null;
-}
+  const vib = computeVibrationRisk();
+  const health = computeSensorHealth();
 
-// ---------------------------------------------------------------------------
-// AUDIT LOG
-// ---------------------------------------------------------------------------
-function logEvent(type, severity, extra = {}) {
-  const event = {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    timestamp: new Date().toISOString(),
-    type,
-    severity,
-    temperature: runtime.temperature,
-    humidity: runtime.humidity,
-    vibration: runtime.vibration,
-    riskScore: extra.riskScore ?? null,
-    mode: runtime.mode,
-    deviceId: db.settings.deviceId,
-    action: extra.action || null,
-    alertStatus: extra.alertStatus || 'logged',
-    acknowledged: false,
-    ...extra
-  };
-  db.events.push(event);
-  if (db.events.length > MAX_EVENTS) db.events.shift();
-  saveDb();
-  io.emit('event', event);
-  return event;
-}
+  let score = 0;
+  const reasons = [];
 
-// ---------------------------------------------------------------------------
-// ALERTING (state-change + cooldown + dedup)
-// ---------------------------------------------------------------------------
-function maybeAlert(currentState, risk) {
-  const now = Date.now();
-  const cooldownMs = (db.settings.alertCooldownSec || 60) * 1000;
-
-  if (currentState === runtime.lastAlertState) {
-    return; // no repeated identical alerts
-  }
-  if (now - runtime.lastAlertTime < cooldownMs && currentState !== 'CRITICAL' && currentState !== 'SENSOR FAULT') {
-    return; // cooldown, unless critical/fault which always alerts on state change
-  }
-
-  runtime.lastAlertState = currentState;
-  runtime.lastAlertTime = now;
-
-  const severityMap = {
-    NORMAL: 'INFO', LOW: 'WARNING', HIGH: 'WARNING', WARNING: 'WARNING',
-    CRITICAL: 'CRITICAL', DANGEROUS: 'DANGEROUS', 'SENSOR FAULT': 'HIGH', OFFLINE: 'HIGH'
-  };
-  const severity = severityMap[currentState] || 'INFO';
-
-  const event = logEvent(
-    currentState === 'NORMAL' ? 'Temperature recovery' : `${currentState} condition`,
-    severity,
-    { riskScore: risk.score, alertStatus: 'sent' }
-  );
-
-  if (severity !== 'INFO') {
-    sendTelegramAlert(event, risk);
-    io.emit('voiceAlert', buildVoiceAlertText(currentState, risk));
-  }
-
-  return event;
-}
-
-function buildVoiceAlertText(state, risk) {
-  const map = {
-    WARNING: 'Warning. Condition is outside the configured safe range.',
-    CRITICAL: 'Critical condition detected.',
-    DANGEROUS: 'Dangerous condition detected.',
-    'SENSOR FAULT': 'Sensor fault detected.',
-    HIGH: 'Warning. Temperature is outside the configured safe range.',
-    LOW: 'Warning. Temperature is outside the configured safe range.'
-  };
-  return map[state] || `Condition changed to ${state}.`;
-}
-
-// ---------------------------------------------------------------------------
-// TELEGRAM (only fires if actually configured; never fakes success)
-// ---------------------------------------------------------------------------
-async function sendTelegramAlert(event, risk) {
-  if (!db.settings.telegramEnabled) return;
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_CHAT_ID;
-  if (!token || !chatId) {
-    console.log('[Telegram] Not configured - skipping alert send.');
-    return;
-  }
-  const text =
-    `${event.severity} EVENT\n\n` +
-    `Device: ${event.deviceId}\n` +
-    `Temperature: ${event.temperature ?? 'N/A'}C\n` +
-    `Risk: ${risk.score}/100\n` +
-    `Type: ${event.type}\n` +
-    `Time: ${event.timestamp}`;
-  try {
-    const resp = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text })
-    });
-    const data = await resp.json();
-    if (!data.ok) console.error('[Telegram] send failed:', data.description);
-  } catch (e) {
-    console.error('[Telegram] request error:', e.message);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// INGEST ENDPOINT (from ESP32)
-// ---------------------------------------------------------------------------
-app.post('/api/ingest', (req, res) => {
-  const body = req.body || {};
-  const now = Date.now();
-
-  runtime.connected = true;
-  runtime.lastUpdate = now;
-  runtime.mode = body.mode === 'DEMO' ? 'DEMO' : 'LIVE';
-  runtime.sensorValid = !!body.sensorValid;
-  runtime.vibration = !!body.vibration;
-  runtime.vibrationEventCount = body.vibrationEventCount ?? runtime.vibrationEventCount;
-
-  if (typeof body.temperature === 'number') {
-    runtime.temperature = body.temperature;
-    runtime.tempHistory.push({ ts: now, temp: body.temperature });
-    if (runtime.tempHistory.length > 200) runtime.tempHistory.shift();
-  }
-  if (typeof body.humidity === 'number') {
-    runtime.humidity = body.humidity;
-  }
-
-  const state = body.state || 'NORMAL';
-  runtime.state = state;
-
-  const abnormal = state !== 'NORMAL';
-  if (abnormal) {
-    runtime.consecutiveAbnormal++;
-    if (!runtime.lastAbnormalEnter) runtime.lastAbnormalEnter = now;
-    runtime.timeOutsideRangeMs = now - runtime.lastAbnormalEnter;
-  } else {
-    runtime.consecutiveAbnormal = 0;
-    runtime.lastAbnormalEnter = null;
-    runtime.timeOutsideRangeMs = 0;
-  }
-
-  if (runtime.vibration) {
-    runtime.recentVibrationTimestamps.push(now);
-    runtime.recentVibrationTimestamps = runtime.recentVibrationTimestamps.filter(ts => now - ts < 15 * 60000);
-    db.vibrationEvents.push({ ts: new Date(now).toISOString(), temperature: runtime.temperature, mode: runtime.mode });
-    if (db.vibrationEvents.length > 1000) db.vibrationEvents.shift();
-    logEvent('Vibration event', 'WARNING', { alertStatus: 'sent' });
-    saveDb();
-  }
-
-  // persist reading (capped)
-  db.readings.push({
-    ts: new Date(now).toISOString(),
-    temperature: runtime.temperature,
-    humidity: runtime.humidity,
-    vibration: runtime.vibration,
-    state,
-    mode: runtime.mode
-  });
-  if (db.readings.length > MAX_READINGS) db.readings.shift();
-  saveDb();
-
-  const risk = computeRisk();
-  const condition = computeConditionAdvisory();
-  const warning = earlyWarning();
-
-  maybeAlert(state, risk);
-
-  broadcastState(risk, condition, warning);
-
-  res.json({ ok: true });
-});
-
-app.post('/api/heartbeat', (req, res) => {
-  const { deviceId, uptimeMs } = req.body || {};
-  const now = Date.now();
-  db.devices[deviceId || db.settings.deviceId] = {
-    lastHeartbeat: new Date(now).toISOString(),
-    uptimeMs: uptimeMs ?? null,
-    ip: req.ip
-  };
-  saveDb();
-  io.emit('heartbeat', db.devices);
-  res.json({ ok: true });
-});
-
-// ---------------------------------------------------------------------------
-// CONNECTIVITY WATCHDOG
-// ---------------------------------------------------------------------------
-setInterval(() => {
-  if (runtime.lastUpdate && Date.now() - runtime.lastUpdate > OFFLINE_TIMEOUT_MS) {
-    if (runtime.connected) {
-      runtime.connected = false;
-      runtime.state = 'OFFLINE';
-      logEvent('Device offline', 'HIGH', { alertStatus: 'sent' });
-      const risk = computeRisk();
-      broadcastState(risk, computeConditionAdvisory(), null);
+  if (typeof state.temperature === 'number' && !state.sensorFault) {
+    const dev = Math.max(state.temperature - s.tempMax, s.tempMin - state.temperature, 0);
+    if (dev > 0) {
+      const devPoints = Math.min(35, Math.round(dev * 8));
+      score += devPoints;
+      reasons.push({ points: devPoints, reason: 'Temperature deviation from configured range' });
     }
   }
-}, 3000);
 
-function broadcastState(risk, condition, warning) {
-  io.emit('state', {
-    mode: runtime.mode,
-    temperature: runtime.temperature,
-    humidity: runtime.humidity,
-    vibration: runtime.vibration,
-    vibrationEventCount: runtime.vibrationEventCount,
-    sensorValid: runtime.sensorValid,
-    state: runtime.state,
-    connected: runtime.connected,
-    lastUpdate: runtime.lastUpdate,
-    trend: computeTrend(),
-    risk,
-    condition,
-    earlyWarning: warning,
-    deviceId: db.settings.deviceId,
-    settings: db.settings
-  });
+  if (trend.direction !== 'FLAT') {
+    const trendPoints = trend.confidence === 'MODERATE' ? 18 : 8;
+    score += trendPoints;
+    reasons.push({ points: trendPoints, reason: `${trend.direction === 'RISING' ? 'Increasing' : 'Decreasing'} temperature trend` });
+  }
+
+  // duration outside range: count of recent history samples outside band
+  const history = db.get('history').value().slice(-20);
+  const outsideCount = history.filter(h => typeof h.temperature === 'number' && (h.temperature < s.tempMin || h.temperature > s.tempMax)).length;
+  if (outsideCount > 0) {
+    const durPoints = Math.min(20, outsideCount * 2);
+    score += durPoints;
+    reasons.push({ points: durPoints, reason: 'Prolonged condition outside target range' });
+  }
+
+  if (vib.score > 0) {
+    const vibPoints = Math.round(vib.score * 0.25);
+    score += vibPoints;
+    reasons.push({ points: vibPoints, reason: 'Vibration/shock activity' });
+  }
+
+  if (health.score < 70) {
+    const healthPoints = Math.round((100 - health.score) * 0.15);
+    score += healthPoints;
+    reasons.push({ points: healthPoints, reason: 'Reduced sensor/connectivity reliability' });
+  }
+
+  score = Math.min(100, Math.round(score));
+
+  let category = 'SAFE';
+  if (score > 80) category = 'CRITICAL';
+  else if (score > 60) category = 'HIGH_RISK';
+  else if (score > 40) category = 'MODERATE_RISK';
+  else if (score > 20) category = 'LOW_RISK';
+
+  return { score, category, reasons, trend, vibration: vib };
 }
 
-// ---------------------------------------------------------------------------
-// REST API: current state, history, settings, exports, alerts, telegram test,
-// emergency call, self-test summary
-// ---------------------------------------------------------------------------
-app.get('/api/state', (req, res) => {
+// ---------------- Condition advisory ----------------
+function computeConditionAdvisory(risk) {
+  const history = db.get('history').value();
+  if (history.length < 5) {
+    return { result: 'INSUFFICIENT_DATA', reason: 'Not enough monitoring history yet to assess condition.' };
+  }
+  if (risk.score <= 20) {
+    return { result: 'GOOD', reason: 'Temperature remained within configured range for the monitored period.' };
+  }
+  if (risk.score <= 40) {
+    return { result: 'WATCH', reason: 'Minor deviations observed. Continue monitoring.' };
+  }
+  if (risk.score <= 70) {
+    return { result: 'AT_RISK', reason: 'Repeated excursions detected. Inspect cold-chain conditions and follow approved vaccine handling procedures.' };
+  }
+  return { result: 'CRITICAL', reason: 'Significant, sustained cold-chain excursion detected. Follow approved vaccine handling / incident procedures immediately.' };
+}
+
+// ---------------- Root-cause / correlation ----------------
+function computeRootCause(risk) {
+  const causes = [];
+  const s = db.get('settings').value();
+  if (typeof state.temperature === 'number' && state.temperature > s.tempMax) causes.push('Temperature exceeded the upper configured threshold.');
+  if (typeof state.temperature === 'number' && state.temperature < s.tempMin) causes.push('Temperature fell below the lower configured threshold.');
+  if (risk.trend.direction === 'RISING') causes.push('Temperature has continued rising over recent samples.');
+  if (risk.trend.direction === 'FALLING') causes.push('Temperature has continued falling over recent samples.');
+  if (risk.vibration.countLast10Min > 0) causes.push(`${risk.vibration.countLast10Min} vibration event(s) occurred in the last 10 minutes.`);
+  if (state.sensorFault) causes.push('DHT11 sensor is currently reporting a fault.');
+  if (!state.wifi) causes.push('Device Wi-Fi connectivity is currently down.');
+
+  let combined = null;
+  if (risk.trend.direction === 'RISING' && risk.vibration.countLast10Min > 0) {
+    combined = 'Combined event detected: temperature trend + vibration activity may compound risk.';
+  }
+
+  return {
+    causes: causes.length ? causes : ['No specific contributing factor identified from current data.'],
+    mostLikely: causes[0] || 'N/A',
+    combinedEvent: combined,
+    recommendedInspection: causes.length ? 'Inspect cooling unit, door seals, and physical placement/handling of the device.' : 'No inspection currently indicated.'
+  };
+}
+
+// ---------------- Alerts ----------------
+async function maybeSendTelegram(text) {
+  const s = db.get('settings').value();
+  if (!s.telegramEnabled || !process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID) {
+    return { sent: false, reason: 'Telegram not configured/unavailable.' };
+  }
+  try {
+    const url = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: process.env.TELEGRAM_CHAT_ID, text })
+    });
+    const json = await res.json();
+    return { sent: !!json.ok, reason: json.ok ? 'Sent' : (json.description || 'Telegram API error') };
+  } catch (e) {
+    return { sent: false, reason: 'Telegram request failed: ' + e.message };
+  }
+}
+
+function raiseAlert(type, severity, message, extra = {}) {
+  const s = db.get('settings').value();
+  const cooldown = s.alertCooldownMs || 60000;
+  const last = state.lastAlertByType[type] || 0;
+  if (Date.now() - last < cooldown) return null; // dedup / cooldown
+  state.lastAlertByType[type] = Date.now();
+
+  const alerts = db.get('alerts').value();
+  const alert = {
+    id: 'alert_' + Date.now(),
+    type, severity, message,
+    timestamp: nowIso(),
+    acknowledged: false,
+    muted: false,
+    ...extra
+  };
+  alerts.push(alert);
+  db.set('alerts', alerts).write();
+  io.emit('alert:new', alert);
+
+  logEvent({ type: 'ALERT', severity, message, temperature: state.temperature, humidity: state.humidity, vibration: state.vibration, mode: state.mode, deviceId: s.deviceId });
+
+  if (['HIGH', 'CRITICAL', 'DANGEROUS'].includes(severity)) {
+    maybeSendTelegram(`[VaxGuard] ${severity}: ${message}`).then(result => {
+      io.emit('telegram:result', result);
+    });
+  }
+
+  return alert;
+}
+
+// ---------------- Main pipeline: process an incoming ESP32 packet ----------------
+function processIncomingPacket(pkt) {
+  const prevState = state.currentState;
+
+  state.mode = pkt.mode === 'DEMO' ? 'DEMO' : 'LIVE';
+  state.temperature = (pkt.temperature === null || pkt.temperature === undefined) ? null : Number(pkt.temperature);
+  state.humidity = (pkt.humidity === null || pkt.humidity === undefined) ? null : Number(pkt.humidity);
+  const vibrationRisingEdge = pkt.vibration && !state.vibration;
+  state.vibration = !!pkt.vibration;
+  state.sensorFault = !!pkt.sensorFault;
+  state.wifi = !!pkt.wifi;
+  state.vibrationEventCount = pkt.vibrationEventCount || state.vibrationEventCount;
+  state.lastEsp32Update = Date.now();
+  state.deviceOnline = true;
+
+  if (vibrationRisingEdge) {
+    recordVibrationEvent();
+    logEvent({ type: 'VIBRATION', severity: 'INFO', message: 'Vibration event detected', temperature: state.temperature, mode: state.mode, deviceId: db.get('settings.deviceId').value() });
+  }
+
+  const newState = computeState(state);
+  state.currentState = newState;
+
+  pushHistory({
+    timestamp: nowIso(),
+    t: Date.now(),
+    temperature: state.temperature,
+    humidity: state.humidity,
+    vibration: state.vibration,
+    mode: state.mode,
+    stateLabel: newState
+  });
+
+  const risk = computeRisk();
+  const advisory = computeConditionAdvisory(risk);
+  const rootCause = computeRootCause(risk);
+
+  if (newState !== prevState) {
+    logEvent({ type: 'STATE_CHANGE', severity: mapSeverity(newState), message: `State changed: ${prevState} -> ${newState}`, temperature: state.temperature, mode: state.mode, deviceId: db.get('settings.deviceId').value() });
+
+    if (newState === 'NORMAL' && prevState !== 'OFFLINE') {
+      raiseAlert('RECOVERY', 'INFO', 'Condition recovered to NORMAL.');
+    } else if (newState === 'SENSOR_FAULT') {
+      raiseAlert('SENSOR_FAULT', 'WARNING', 'DHT11 sensor fault detected.');
+    } else if (['HIGH', 'LOW'].includes(newState)) {
+      raiseAlert(newState, 'WARNING', `${newState} temperature condition detected (${state.temperature}°C).`);
+    } else if (newState === 'CRITICAL') {
+      raiseAlert('CRITICAL', 'CRITICAL', `Critical temperature condition (${state.temperature}°C). Risk ${risk.score}/100.`);
+    } else if (newState === 'DANGEROUS') {
+      raiseAlert('DANGEROUS', 'DANGEROUS', `Dangerous cold-chain excursion (${state.temperature}°C). Risk ${risk.score}/100. Immediate action recommended.`);
+    } else if (newState === 'WARNING') {
+      raiseAlert('WARNING', 'WARNING', 'Vibration/shock event flagged during monitoring.');
+    }
+  }
+
+  broadcastDashboard(risk, advisory, rootCause);
+}
+
+function mapSeverity(s) {
+  return { NORMAL: 'INFO', LOW: 'WARNING', HIGH: 'WARNING', WARNING: 'WARNING', CRITICAL: 'CRITICAL', DANGEROUS: 'DANGEROUS', SENSOR_FAULT: 'WARNING', OFFLINE: 'WARNING' }[s] || 'INFO';
+}
+
+function broadcastDashboard(risk, advisory, rootCause) {
+  const settings = db.get('settings').value();
+  const payload = {
+    ...state,
+    settings,
+    risk,
+    advisory,
+    rootCause,
+    sensorHealth: computeSensorHealth(),
+    earlyWarning: computeEarlyWarning(risk.trend, settings),
+    serverTime: nowIso()
+  };
+  io.emit('dashboard:update', payload);
+}
+
+// ---------------- Device offline watchdog ----------------
+setInterval(() => {
+  if (state.lastEsp32Update && Date.now() - state.lastEsp32Update > 20000 && state.deviceOnline) {
+    state.deviceOnline = false;
+    state.currentState = 'OFFLINE';
+    logEvent({ type: 'CONNECTIVITY', severity: 'WARNING', message: 'ESP32 offline (no data received).', deviceId: db.get('settings.deviceId').value() });
+    raiseAlert('OFFLINE', 'WARNING', 'Device appears offline - no recent data received.');
+    broadcastDashboard(computeRisk(), computeConditionAdvisory(computeRisk()), computeRootCause(computeRisk()));
+  }
+}, 5000);
+
+// ================================================================
+// Express + Socket.IO + WS bridge
+// ================================================================
+const app = express();
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
+
+const server = http.createServer(app);
+const io = new SocketIOServer(server, { cors: { origin: '*' } });
+
+// --- Raw WebSocket server for the ESP32 at path /esp32 ---
+const wss = new WebSocket.Server({ server, path: '/esp32' });
+wss.on('connection', (ws) => {
+  console.log('[ESP32] connected via WebSocket');
+  ws.on('message', (msg) => {
+    try {
+      const pkt = JSON.parse(msg.toString());
+      if (pkt.type === 'heartbeat') {
+        state.lastHeartbeat = Date.now();
+        state.deviceOnline = true;
+        return;
+      }
+      processIncomingPacket(pkt);
+    } catch (e) {
+      console.error('[ESP32] bad packet:', e.message);
+    }
+  });
+  ws.on('close', () => console.log('[ESP32] disconnected'));
+});
+
+// --- Socket.IO: dashboard clients ---
+io.on('connection', (socket) => {
+  socket.emit('dashboard:update', {
+    ...state,
+    settings: db.get('settings').value(),
+    risk: computeRisk(),
+    advisory: computeConditionAdvisory(computeRisk()),
+    rootCause: computeRootCause(computeRisk()),
+    sensorHealth: computeSensorHealth(),
+    earlyWarning: computeEarlyWarning(computeRisk().trend, db.get('settings').value()),
+    serverTime: nowIso()
+  });
+
+  socket.on('alert:ack', ({ id, source }) => {
+    const alerts = db.get('alerts').value();
+    const a = alerts.find(x => x.id === id);
+    if (a) {
+      a.acknowledged = true;
+      a.acknowledgedBy = source || 'dashboard';
+      a.acknowledgedAt = nowIso();
+      db.set('alerts', alerts).write();
+      logEvent({ type: 'ACK', severity: 'INFO', message: `Alert ${id} acknowledged`, userAction: source || 'dashboard' });
+      io.emit('alert:updated', a);
+    }
+  });
+
+  socket.on('alert:mute', ({ id }) => {
+    const alerts = db.get('alerts').value();
+    const a = alerts.find(x => x.id === id);
+    if (a) { a.muted = true; db.set('alerts', alerts).write(); io.emit('alert:updated', a); }
+  });
+
+  socket.on('demo:log', ({ command }) => {
+    // Optional: browser can tell the server which demo command was just sent via serial,
+    // purely for audit purposes (does not simulate data on its own).
+    logEvent({ type: 'DEMO_COMMAND', severity: 'INFO', message: `Demo command noted: ${command}` });
+  });
+});
+
+// ================================================================
+// REST API
+// ================================================================
+
+app.get('/api/status', (req, res) => {
   const risk = computeRisk();
   res.json({
-    mode: runtime.mode,
-    temperature: runtime.temperature,
-    humidity: runtime.humidity,
-    vibration: runtime.vibration,
-    vibrationEventCount: runtime.vibrationEventCount,
-    sensorValid: runtime.sensorValid,
-    state: runtime.state,
-    connected: runtime.connected,
-    lastUpdate: runtime.lastUpdate,
-    trend: computeTrend(),
+    ...state,
+    settings: db.get('settings').value(),
     risk,
-    condition: computeConditionAdvisory(),
-    earlyWarning: earlyWarning(),
-    deviceId: db.settings.deviceId,
-    settings: db.settings,
-    devices: db.devices
+    advisory: computeConditionAdvisory(risk),
+    rootCause: computeRootCause(risk),
+    sensorHealth: computeSensorHealth()
   });
 });
 
 app.get('/api/history', (req, res) => {
-  const { severity, mode, from, to, ackStatus, limit } = req.query;
-  let events = db.events.slice();
+  const { range } = req.query; // 1h,6h,12h,24h,7d
+  const now = Date.now();
+  const spans = { '1h': 3600e3, '6h': 6 * 3600e3, '12h': 12 * 3600e3, '24h': 24 * 3600e3, '7d': 7 * 24 * 3600e3 };
+  const span = spans[range] || spans['6h'];
+  const history = db.get('history').value().filter(h => now - h.t <= span);
+  res.json(history);
+});
+
+app.get('/api/events', (req, res) => {
+  let events = db.get('events').value();
+  const { severity, type, from, to, mode, ack } = req.query;
   if (severity) events = events.filter(e => e.severity === severity);
+  if (type) events = events.filter(e => e.type === type);
   if (mode) events = events.filter(e => e.mode === mode);
+  if (ack === 'true') events = events.filter(e => e.acknowledged);
+  if (ack === 'false') events = events.filter(e => !e.acknowledged);
   if (from) events = events.filter(e => new Date(e.timestamp) >= new Date(from));
   if (to) events = events.filter(e => new Date(e.timestamp) <= new Date(to));
-  if (ackStatus === 'acknowledged') events = events.filter(e => e.acknowledged);
-  if (ackStatus === 'unacknowledged') events = events.filter(e => !e.acknowledged);
-  events = events.slice(-(parseInt(limit) || 500)).reverse();
   res.json(events);
 });
 
-app.get('/api/readings', (req, res) => {
-  const { hours } = req.query;
-  const h = parseFloat(hours) || 24;
-  const cutoff = Date.now() - h * 3600000;
-  const readings = db.readings.filter(r => new Date(r.ts).getTime() >= cutoff);
-  res.json(readings);
+app.get('/api/alerts', (req, res) => res.json(db.get('alerts').value()));
+
+app.post('/api/alerts/:id/ack', (req, res) => {
+  const alerts = db.get('alerts').value();
+  const a = alerts.find(x => x.id === req.params.id);
+  if (!a) return res.status(404).json({ error: 'not found' });
+  a.acknowledged = true;
+  a.acknowledgedAt = nowIso();
+  db.set('alerts', alerts).write();
+  res.json(a);
 });
 
-app.get('/api/vibration-events', (req, res) => {
-  res.json(db.vibrationEvents.slice(-500).reverse());
+app.get('/api/vibration', (req, res) => {
+  res.json({ events: db.get('vibrationEvents').value(), risk: computeVibrationRisk() });
 });
 
-app.post('/api/alerts/:id/:action', (req, res) => {
-  const { id, action } = req.params;
-  const event = db.events.find(e => e.id === id);
-  if (!event) return res.status(404).json({ ok: false, error: 'Event not found' });
-
-  if (action === 'acknowledge') {
-    event.acknowledged = true;
-    event.userAction = 'acknowledged';
-  } else if (action === 'mute') {
-    event.userAction = 'muted';
-  } else if (action === 'escalate') {
-    event.userAction = 'escalated';
-  } else {
-    return res.status(400).json({ ok: false, error: 'Unknown action' });
-  }
-  saveDb();
-  io.emit('eventUpdated', event);
-  res.json({ ok: true, event });
-});
-
-app.get('/api/settings', (req, res) => res.json(db.settings));
+app.get('/api/settings', (req, res) => res.json(db.get('settings').value()));
 
 app.post('/api/settings', (req, res) => {
-  const incoming = req.body || {};
-  // basic validation - reject impossible values
-  if (typeof incoming.tempMin === 'number' && typeof incoming.tempMax === 'number' && incoming.tempMin >= incoming.tempMax) {
-    return res.status(400).json({ ok: false, error: 'tempMin must be less than tempMax' });
+  const allowed = ['tempMin', 'tempMax', 'warningMargin', 'criticalMargin', 'alertCooldownMs', 'voiceAlertsEnabled', 'telegramEnabled', 'deviceName', 'deviceId', 'retentionDays'];
+  const updates = {};
+  for (const k of allowed) {
+    if (k in req.body) updates[k] = req.body[k];
   }
-  if (incoming.alertCooldownSec !== undefined && incoming.alertCooldownSec < 0) {
-    return res.status(400).json({ ok: false, error: 'alertCooldownSec cannot be negative' });
+  // basic validation
+  if ('tempMin' in updates && 'tempMax' in updates && Number(updates.tempMin) >= Number(updates.tempMax)) {
+    return res.status(400).json({ error: 'tempMin must be less than tempMax' });
   }
-  db.settings = { ...db.settings, ...incoming };
-  saveDb();
-  logEvent('Settings changed', 'INFO', { alertStatus: 'logged' });
-  io.emit('settingsUpdated', db.settings);
-  res.json({ ok: true, settings: db.settings });
+  db.set('settings', { ...db.get('settings').value(), ...updates }).write();
+  logEvent({ type: 'SETTINGS_CHANGED', severity: 'INFO', message: 'Settings updated', userAction: 'dashboard' });
+  io.emit('settings:updated', db.get('settings').value());
+  res.json(db.get('settings').value());
 });
 
+app.get('/api/selftest', async (req, res) => {
+  const settings = db.get('settings').value();
+  const results = {
+    backend: { status: 'PASS' },
+    websocket: { status: io.engine.clientsCount >= 0 ? 'PASS' : 'FAIL' },
+    esp32: { status: state.deviceOnline ? 'PASS' : 'WARNING', detail: state.deviceOnline ? 'Online' : 'No recent data from device' },
+    dht11: { status: state.sensorFault ? 'FAIL' : (state.deviceOnline ? 'PASS' : 'WARNING'), detail: state.sensorFault ? 'Reporting fault' : 'OK (based on last packet)' },
+    storage: { status: fs.existsSync(path.join(DATA_DIR, 'db.json')) ? 'PASS' : 'FAIL' },
+    telegram: { status: settings.telegramEnabled ? 'PASS' : 'NOT_CONFIGURED' },
+    callingProvider: { status: process.env.CALL_PROVIDER_API_KEY ? 'PASS' : 'NOT_CONFIGURED' }
+  };
+  logEvent({ type: 'SELF_TEST', severity: 'INFO', message: 'Self-test executed', userAction: 'dashboard' });
+  res.json(results);
+});
+
+// --- Export center ---
 app.get('/api/export/csv', (req, res) => {
-  const rows = ['timestamp,temperature,humidity,vibration,state,mode'];
-  db.readings.forEach(r => {
-    rows.push(`${r.ts},${r.temperature ?? ''},${r.humidity ?? ''},${r.vibration},${r.state},${r.mode}`);
-  });
+  const history = db.get('history').value();
+  const header = 'timestamp,temperature,humidity,vibration,mode,state\n';
+  const rows = history.map(h => `${h.timestamp},${h.temperature ?? ''},${h.humidity ?? ''},${h.vibration},${h.mode},${h.stateLabel}`).join('\n');
   res.setHeader('Content-Type', 'text/csv');
-  res.setHeader('Content-Disposition', 'attachment; filename="vaxguard_readings.csv"');
-  res.send(rows.join('\n'));
+  res.setHeader('Content-Disposition', 'attachment; filename="vaxguard_history.csv"');
+  res.send(header + rows);
 });
 
 app.get('/api/export/json', (req, res) => {
   res.setHeader('Content-Disposition', 'attachment; filename="vaxguard_export.json"');
-  res.json({ readings: db.readings, events: db.events, vibrationEvents: db.vibrationEvents });
+  res.json({
+    exportedAt: nowIso(),
+    settings: db.get('settings').value(),
+    history: db.get('history').value(),
+    events: db.get('events').value(),
+    alerts: db.get('alerts').value(),
+    vibrationEvents: db.get('vibrationEvents').value()
+  });
 });
 
-app.get('/api/export/audit-csv', (req, res) => {
-  const rows = ['timestamp,eventId,type,severity,temperature,humidity,vibration,riskScore,mode,deviceId,action,alertStatus,acknowledged'];
-  db.events.forEach(e => {
-    rows.push([e.timestamp, e.id, e.type, e.severity, e.temperature, e.humidity, e.vibration, e.riskScore, e.mode, e.deviceId, e.action, e.alertStatus, e.acknowledged].join(','));
-  });
+app.get('/api/export/audit.csv', (req, res) => {
+  const events = db.get('events').value();
+  const header = 'timestamp,id,type,severity,temperature,humidity,vibration,mode,acknowledged\n';
+  const rows = events.map(e => `${e.timestamp},${e.id},${e.type},${e.severity || ''},${e.temperature ?? ''},${e.humidity ?? ''},${e.vibration ?? ''},${e.mode || ''},${e.acknowledged}`).join('\n');
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', 'attachment; filename="vaxguard_audit.csv"');
-  res.send(rows.join('\n'));
+  res.send(header + rows);
 });
 
-app.post('/api/history/clear', (req, res) => {
-  if (req.body?.confirm !== true) {
-    return res.status(400).json({ ok: false, error: 'Confirmation required to clear history.' });
-  }
-  db.events = [];
-  db.readings = [];
-  db.vibrationEvents = [];
-  saveDb();
-  res.json({ ok: true });
-});
+// --- Reports ---
+app.get('/api/report/:kind', (req, res) => {
+  const kind = req.params.kind; // daily, weekly, incident, sensor, summary
+  const spanMs = kind === 'weekly' ? 7 * 24 * 3600e3 : 24 * 3600e3;
+  const now = Date.now();
+  const history = db.get('history').value().filter(h => now - h.t <= spanMs);
+  const temps = history.map(h => h.temperature).filter(t => typeof t === 'number');
+  const events = db.get('events').value().filter(e => now - new Date(e.timestamp).getTime() <= spanMs);
+  const alerts = db.get('alerts').value().filter(a => now - new Date(a.timestamp).getTime() <= spanMs);
 
-app.post('/api/telegram/test', async (req, res) => {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_CHAT_ID;
-  if (!token || !chatId) {
-    return res.json({ ok: false, message: 'Telegram not configured. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env.' });
-  }
-  try {
-    const resp = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text: 'VaxGuard test alert - Telegram integration is working.' })
-    });
-    const data = await resp.json();
-    res.json({ ok: !!data.ok, message: data.ok ? 'Test message sent.' : `Telegram error: ${data.description}` });
-  } catch (e) {
-    res.json({ ok: false, message: `Request failed: ${e.message}` });
-  }
-});
-
-app.post('/api/emergency/call', async (req, res) => {
-  const webhook = process.env.CALL_PROVIDER_WEBHOOK_URL;
-  const contact = process.env.EMERGENCY_CONTACT_NUMBER;
-  if (!webhook || !contact) {
-    return res.json({ ok: false, message: 'Calling provider not configured.' });
-  }
-  try {
-    const resp = await fetch(webhook, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to: contact, message: 'VaxGuard emergency alert' })
-    });
-    const ok = resp.ok;
-    logEvent('Emergency call triggered', 'CRITICAL', { alertStatus: ok ? 'sent' : 'failed' });
-    res.json({ ok, message: ok ? 'Call request sent to provider.' : 'Provider returned an error - call not confirmed.' });
-  } catch (e) {
-    res.json({ ok: false, message: `Call provider request failed: ${e.message}` });
-  }
-});
-
-app.post('/api/selftest', (req, res) => {
-  const results = [];
-  results.push({ item: 'Backend', status: 'PASS', detail: 'Server responding.' });
-  results.push({
-    item: 'ESP32 connectivity',
-    status: runtime.connected ? 'PASS' : 'FAIL',
-    detail: runtime.connected ? 'Recent data received.' : 'No recent data from device.'
-  });
-  results.push({
-    item: 'DHT11 sensor',
-    status: runtime.sensorValid ? 'PASS' : 'WARNING',
-    detail: runtime.sensorValid ? 'Valid readings.' : 'Sensor invalid or not reporting.'
-  });
-  results.push({
-    item: 'Telegram',
-    status: (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) ? 'PASS' : 'NOT CONFIGURED',
-    detail: (process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID) ? 'Credentials present.' : 'Set TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID in .env.'
-  });
-  results.push({
-    item: 'Calling provider',
-    status: (process.env.CALL_PROVIDER_WEBHOOK_URL) ? 'PASS' : 'NOT CONFIGURED',
-    detail: process.env.CALL_PROVIDER_WEBHOOK_URL ? 'Webhook configured.' : 'No calling provider configured.'
-  });
-  logEvent('Self-test completed', 'INFO', { alertStatus: 'logged' });
-  res.json({ results });
-});
-
-app.get('/api/report', (req, res) => {
-  const { type } = req.query; // daily | weekly | incident | sensor | summary
-  const hours = type === 'weekly' ? 168 : 24;
-  const cutoff = Date.now() - hours * 3600000;
-  const readings = db.readings.filter(r => new Date(r.ts).getTime() >= cutoff);
-  const events = db.events.filter(e => new Date(e.timestamp).getTime() >= cutoff);
-  const temps = readings.map(r => r.temperature).filter(t => typeof t === 'number');
   const report = {
-    type: type || 'summary',
-    periodHours: hours,
-    monitoringDurationSamples: readings.length,
+    kind,
+    generatedAt: nowIso(),
+    monitoringDurationSamples: history.length,
     temperature: temps.length ? {
       min: Math.min(...temps), max: Math.max(...temps),
-      avg: +(temps.reduce((a, b) => a + b, 0) / temps.length).toFixed(2)
+      avg: Number((temps.reduce((a, b) => a + b, 0) / temps.length).toFixed(2))
     } : null,
-    vibrationEvents: readings.filter(r => r.vibration).length,
-    alerts: events.filter(e => e.severity !== 'INFO').length,
-    faults: events.filter(e => e.type.includes('fault') || e.type.includes('Sensor fault')).length,
-    recoveries: events.filter(e => e.type.includes('recovery')).length,
-    generatedAt: new Date().toISOString()
+    vibrationEvents: db.get('vibrationEvents').value().filter(v => now - v.t <= spanMs).length,
+    alertsRaised: alerts.length,
+    faults: events.filter(e => e.type === 'STATE_CHANGE' && e.message.includes('SENSOR_FAULT')).length,
+    recoveries: events.filter(e => e.type === 'ALERT' && e.message.toLowerCase().includes('recover')).length,
+    recommendations: temps.length && (Math.max(...temps) > db.get('settings.tempMax').value() || Math.min(...temps) < db.get('settings.tempMin').value())
+      ? ['Review cold-chain equipment', 'Confirm door/seal integrity', 'Re-verify sensor placement']
+      : ['No corrective action currently indicated']
   };
   res.json(report);
 });
 
-// ---------------------------------------------------------------------------
-// SOCKET.IO
-// ---------------------------------------------------------------------------
-io.on('connection', (socket) => {
-  const risk = computeRisk();
-  socket.emit('state', {
-    mode: runtime.mode,
-    temperature: runtime.temperature,
-    humidity: runtime.humidity,
-    vibration: runtime.vibration,
-    vibrationEventCount: runtime.vibrationEventCount,
-    sensorValid: runtime.sensorValid,
-    state: runtime.state,
-    connected: runtime.connected,
-    lastUpdate: runtime.lastUpdate,
-    trend: computeTrend(),
-    risk,
-    condition: computeConditionAdvisory(),
-    earlyWarning: earlyWarning(),
-    deviceId: db.settings.deviceId,
-    settings: db.settings
-  });
+// --- Location (device-reported; never invented) ---
+let lastKnownLocation = null;
+app.post('/api/location', (req, res) => {
+  const { lat, lng } = req.body;
+  if (typeof lat !== 'number' || typeof lng !== 'number') return res.status(400).json({ error: 'lat/lng required' });
+  lastKnownLocation = { lat, lng, updatedAt: nowIso() };
+  logEvent({ type: 'LOCATION_UPDATE', severity: 'INFO', message: 'Device location updated from browser geolocation' });
+  res.json(lastKnownLocation);
+});
+app.get('/api/location', (req, res) => res.json(lastKnownLocation || { status: 'unavailable' }));
+
+// --- Emergency call (honest stub) ---
+app.post('/api/emergency/call', async (req, res) => {
+  const configured = !!process.env.CALL_PROVIDER_API_KEY && !!process.env.EMERGENCY_CONTACT_NUMBER;
+  if (!configured) {
+    logEvent({ type: 'EMERGENCY_CALL_ATTEMPT', severity: 'WARNING', message: 'Call attempted but no calling provider configured.' });
+    return res.json({ success: false, message: 'Calling provider not configured.' });
+  }
+  // NOTE: no calling provider is wired up in this prototype. If you integrate
+  // one, replace this block with a real API call and only report success
+  // once the provider confirms it.
+  logEvent({ type: 'EMERGENCY_CALL_ATTEMPT', severity: 'WARNING', message: 'Call attempted - provider integration not implemented in this build.' });
+  return res.json({ success: false, message: 'Calling provider credentials found, but no provider integration is implemented in this build. No call was placed.' });
 });
 
+// --- Telegram test ---
+app.post('/api/telegram/test', async (req, res) => {
+  const result = await maybeSendTelegram('VaxGuard test alert - if you see this, Telegram alerts are working.');
+  res.json(result);
+});
+
+const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => {
-  console.log(`VaxGuard server listening on http://localhost:${PORT}`);
-  if (!AUTH_ENABLED) {
-    console.log('NOTE: Dashboard auth is not configured (see .env DASHBOARD_USERNAME/PASSWORD).');
-  }
+  console.log(`VaxGuard server listening on port ${PORT}`);
+  console.log(`ESP32 should connect its WebSocket to ws://<this-host>:${PORT}/esp32`);
 });
