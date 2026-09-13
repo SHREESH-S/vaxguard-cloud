@@ -1,33 +1,14 @@
 {
-  "system": {
-    "name": "VaxGuard",
-    "version": "3.0.0",
-    "defaultMode": "DEMO"
-  },
+  "deviceId": "VAXGUARD-001",
+  "locationLabel": "Pharmacy Main Cold-Chain Unit A",
   "thresholds": {
-    "tempMin": 2.0,
-    "tempMax": 8.0,
-    "tempWarningMargin": 1.0,
-    "tempHighMargin": 2.5,
-    "humidityMin": 30,
-    "humidityMax": 80,
-    "vibrationEventsForWarning": 2,
-    "vibrationEventsForHigh": 4,
-    "vibrationEventsForCritical": 6,
-    "vibrationWindowSeconds": 120
+    "min": 2.0,
+    "max": 8.0,
+    "warnLow": 2.8,
+    "warnHigh": 7.2,
+    "vibWarn": 3,
+    "vibBreach": 8
   },
-  "risk": {
-    "historyWindow": 30,
-    "trendWindow": 8,
-    "anomalyZScoreThreshold": 2.2
-  },
-  "escalation": {
-    "criticalConfirmationSeconds": 30,
-    "callCooldownMinutes": 15,
-    "maxCallAttempts": 3
-  },
-  "server": {
-    "eventRetentionDays": 30,
-    "maxHistoryPoints": 500
-  }
+  "samplingIntervalMs": 5000,
+  "cooldownMs": 15000
 }
